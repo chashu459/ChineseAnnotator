@@ -873,10 +873,10 @@
   ],
   "priority::几": [
     {
-      "traditional": "几",
+      "traditional": "幾",
       "simplified": "几",
       "pinyin": "ji3",
-      "english": "how much/how many/several/a few",
+      "english": "how many; how much/several; a few",
       "reason": "g2pM curation",
       "priority": 300
     }
@@ -898,6 +898,46 @@
       "pinyin": "mi1",
       "english": "to narrow one's eyes/to squint/(dialect) to take a nap",
       "reason": "g2pM curation",
+      "priority": 300
+    }
+  ],
+  "priority::喝": [
+    {
+      "traditional": "喝",
+      "simplified": "喝",
+      "pinyin": "he1",
+      "english": "to drink/variant of 嗬[he1]",
+      "reason": "g2pM curation",
+      "priority": 300
+    }
+  ],
+  "priority::一个": [
+    {
+      "traditional": "一個",
+      "simplified": "一个",
+      "pinyin": "yi1 ge5",
+      "english": "a; an; one/the whole (afternoon, summer vacation etc)",
+      "reason": "g2pW curation",
+      "priority": 300
+    }
+  ],
+  "priority::得": [
+    {
+      "traditional": "得",
+      "simplified": "得",
+      "pinyin": "dei3",
+      "english": "to have to/must/ought to/to need to",
+      "reason": "g2pW curation",
+      "priority": 300
+    }
+  ],
+  "priority::为": [
+    {
+      "traditional": "為",
+      "simplified": "为",
+      "pinyin": "wei4",
+      "english": "because of/for/to",
+      "reason": "g2pW curation",
       "priority": 300
     }
   ]
