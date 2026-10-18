@@ -48,6 +48,12 @@ PERFORMANCE = env_flag('PERFORMANCE', default=False)
 # See api/polyphone.py. Set G2PM_ENABLED=0 to fall back to the pure
 # Trie + priority-list behavior.
 G2PM_ENABLED = env_flag('G2PM_ENABLED', default=True)
+# Advisory mode (default): g2pM only flags disagreements with the dictionary
+# (source='conflict') and never overrides a reading. The main /annotate
+# endpoint skips g2pM entirely in this mode; /annotate/provenance runs it in
+# the background for dev-mode highlighting. Set G2PM_ADVISORY_MODE=0 to let
+# g2pM override the dictionary when its prediction is a known reading.
+G2PM_ADVISORY_MODE = env_flag('G2PM_ADVISORY_MODE', default=True)
 
 # SECRET_KEY = '' # Change to empty string
 

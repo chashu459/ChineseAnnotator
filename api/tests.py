@@ -1,4 +1,4 @@
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from api.polyphone import (
     SOURCE_CONFLICT,
@@ -51,7 +51,15 @@ class PolyphoneResolvePinyinTest(TestCase):
         pinyin, source = resolve_pinyin("\u884c", "xing2", entries, "xing2")
         self.assertEqual((pinyin, source), ("xing2", SOURCE_DICT))
 
-    def test_override_reports_g2pm_source(self):
+    def test_override_in_advisory_mode_reports_conflict_and_keeps_default(self):
+        # Advisory mode (default): the model never overrides; the dictionary
+        # reading is kept and the disagreement is flagged for curation.
+        entries = self._entries("xing2", "hang2")
+        pinyin, source = resolve_pinyin("\u884c", "xing2", entries, "hang2")
+        self.assertEqual((pinyin, source), ("xing2", SOURCE_CONFLICT))
+
+    @override_settings(G2PM_ADVISORY_MODE=False)
+    def test_override_when_advisory_disabled_reports_g2pm_source(self):
         entries = self._entries("xing2", "hang2")
         pinyin, source = resolve_pinyin("\u884c", "xing2", entries, "hang2")
         self.assertEqual((pinyin, source), ("hang2", SOURCE_G2PM))

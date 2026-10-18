@@ -54,6 +54,25 @@ def is_enabled():
         from django.conf import settings
         return bool(getattr(settings, "G2PM_ENABLED", True))
     except Exception:
+        # Standalone (no Django settings configured): stay enabled so the
+        # pure logic remains testable.
+        return True
+
+
+def advisory_mode():
+    """Whether g2pM may only flag disagreements, never override (default True).
+
+    In advisory mode the dictionary reading is always kept; a g2pM
+    disagreement is reported as SOURCE_CONFLICT for dictionary curation
+    instead of overriding the reading. Controlled by the G2PM_ADVISORY_MODE
+    Django setting / environment variable.
+    """
+    try:
+        from django.conf import settings
+        return bool(getattr(settings, "G2PM_ADVISORY_MODE", True))
+    except Exception:
+        return True
+    except Exception:
         return True
 
 
@@ -146,6 +165,10 @@ def resolve_pinyin(char, dict_pinyin, char_entries, g2pm_pinyin):
     wanted = g2pm_pinyin.lower()
     for candidate in candidates:
         if candidate.lower() == wanted:
+            if advisory_mode():
+                # Advisory mode: the model doesn't get to override; flag
+                # the disagreement for dictionary curation instead.
+                return dict_pinyin, SOURCE_CONFLICT
             return candidate, SOURCE_G2PM
     # g2pM disagreed with the dictionary but its reading isn't a known
     # candidate for this character, so keep the dictionary reading and flag

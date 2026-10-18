@@ -291,7 +291,15 @@ class AnnotationView(APIView):
             sources.append(source)
         return pinyins, sources
 
-    def annotate(self, owner: str, text: str):
+    def annotate(self, owner: str, text: str, with_provenance=False):
+        """Annotate text with pinyin.
+
+        with_provenance: run the g2pM model to compute per-character pinyin
+            provenance ('dict' | 'g2pm' | 'conflict'). In advisory mode (the
+            default) the model never changes a reading, so the fast path
+            (with_provenance=False) skips it entirely; the frontend calls
+            /annotate/provenance in the background for dev-mode highlighting.
+        """
         print("===============================")
         print(text)
         # TODO: return only simplified?
@@ -327,7 +335,13 @@ class AnnotationView(APIView):
         # g2pM polyphone (多音字) disambiguation: one contextual pinyin
         # prediction per character of the original text. char_split=True
         # guarantees the predictions align 1:1 with text. See api/polyphone.py.
-        poly_pinyins = polyphone.predict_char_pinyins(text)
+        # In advisory mode the model never overrides a reading, so the fast
+        # path skips it entirely (all sources stay 'dict'); the provenance
+        # endpoint runs it in the background for dev-mode highlighting.
+        run_g2pm = with_provenance or not polyphone.advisory_mode()
+        poly_pinyins = None
+        if run_g2pm:
+            poly_pinyins = polyphone.predict_char_pinyins(text)
 
         # fragments concatenate back to text in order; record each
         # fragment's start offset so single-character phrases can look up
@@ -463,6 +477,24 @@ class AnnotationView(APIView):
 
         return Response({'Bad Request': 'Invalid data...'}, status=status.HTTP_400_BAD_REQUEST)
 
+
+
+class ProvenanceView(APIView):
+    """Dev-only background pass: re-annotate text with g2pM provenance.
+
+    The main /annotate endpoint skips g2pM for speed (in advisory mode the
+    model never changes a reading anyway). The frontend calls this endpoint
+    in the background when ?dev=1 is set and swaps the result in to
+    highlight model/dictionary disagreements.
+    """
+    def post(self, request, format=None):
+        text = request.data.get('text', '') if isinstance(request.data, dict) else ''
+        if not isinstance(text, str) or not text.strip():
+            return Response([], status=status.HTTP_200_OK)
+        data = AnnotationView().annotate("default", text, with_provenance=True)
+        responseData = [PhraseEntrySerializer(phrase).data if isinstance(phrase, PhraseEntry)
+                        else ChineseEntrySerializer(phrase).data for phrase in data]
+        return Response(responseData, status=status.HTTP_200_OK)
 
 
 class ReloadCEDictView(APIView):

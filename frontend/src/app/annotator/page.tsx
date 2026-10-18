@@ -634,6 +634,9 @@ export default function AnnotatorPage() {
   const [toastTone, setToastTone] = useState<"neutral" | "success">("neutral");
   const lookupRequestId = useRef(0);
   const previousViewModeRef = useRef<ViewMode>("reader");
+  // Guards the dev-only background provenance pass against stale responses
+  // when the user loads another text before it finishes.
+  const provenanceRequestRef = useRef<number>(0);
   const toastTimeoutRef = useRef<number | null>(null);
   const longPressTimeoutRef = useRef<number | null>(null);
   const longPressTriggeredRef = useRef(false);
@@ -1037,8 +1040,9 @@ export default function AnnotatorPage() {
       resetLookupState();
 
       try {
+        const segments = segmentText(sourceText);
         const results = await Promise.all(
-          segmentText(sourceText).map((segment) =>
+          segments.map((segment) =>
             segment.blank
               ? Promise.resolve([])
               : api.post<AnnotationItem[]>("/annotate", { text: segment.text }),
@@ -1049,13 +1053,38 @@ export default function AnnotatorPage() {
         setReaderLabel(nextReaderLabel);
         showToast("Annotation complete.", "success");
         setActivePanel(null);
+
+        // Dev-only (?dev=1): run the g2pM provenance pass in the background
+        // and swap the highlights in when it finishes. The fast pass above
+        // already shows the readings; this only adds provenance flags, so a
+        // stale response must never overwrite a newer annotation.
+        if (devMode) {
+          const requestId = ++provenanceRequestRef.current;
+          void Promise.all(
+            segments.map((segment) =>
+              segment.blank
+                ? Promise.resolve([])
+                : api.post<AnnotationItem[]>("/annotate/provenance", {
+                    text: segment.text,
+                  }),
+            ),
+          )
+            .then((provenanceResults) => {
+              if (provenanceRequestRef.current === requestId) {
+                setAnnotations(provenanceResults);
+              }
+            })
+            .catch(() => {
+              // Provenance is best-effort; the fast pass is already shown.
+            });
+        }
       } catch (error) {
         setErrorMessage(getErrorMessage(error));
       } finally {
         setAnnotating(false);
       }
     },
-    [resetLookupState, showToast],
+    [devMode, resetLookupState, showToast],
   );
 
   useEffect(() => {
@@ -1361,13 +1390,12 @@ export default function AnnotatorPage() {
     const fragmentToneClass = viewMode === "reader" ? "text-slate-800" : "text-slate-900";
     const highlighted = lookupSelected || dragSelected;
     const pinyinSource = fragment.source ?? "dict";
-    const devSourceClass = !devMode
-      ? ""
-      : pinyinSource === "g2pm"
-        ? "underline decoration-emerald-500 decoration-2 underline-offset-[6px]"
-        : pinyinSource === "conflict"
-          ? "underline decoration-amber-500 decoration-2 underline-offset-[6px]"
-          : "underline decoration-slate-400 decoration-2 underline-offset-[6px]";
+    const devSourceClass =
+      devMode && pinyinSource !== "dict"
+        ? pinyinSource === "g2pm"
+          ? "underline decoration-emerald-500 decoration-2 underline-offset-[6px]"
+          : "underline decoration-amber-500 decoration-2 underline-offset-[6px]"
+        : "";
 
     return (
       <button
@@ -1550,9 +1578,7 @@ export default function AnnotatorPage() {
             <span className="underline decoration-amber-500 decoration-2 underline-offset-4">
               conflict · dictionary kept
             </span>
-            <span className="underline decoration-slate-400 decoration-2 underline-offset-4">
-              dictionary
-            </span>
+            <span className="text-slate-400">no underline = dictionary</span>
           </div>
         )}
 
