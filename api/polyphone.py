@@ -68,7 +68,7 @@ def model_available():
     """
     if not is_enabled():
         return False
-    return _get_model() is not None
+    return get_model() is not None
 
 
 def advisory_mode():
@@ -82,8 +82,6 @@ def advisory_mode():
     try:
         from django.conf import settings
         return bool(getattr(settings, "G2PM_ADVISORY_MODE", True))
-    except Exception:
-        return True
     except Exception:
         return True
 
