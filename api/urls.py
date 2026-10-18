@@ -1,7 +1,7 @@
 from django.urls import path, include
 
 from api.views.memoryView import CleanMemoryView, CreateMemoryView, DestroyMemoryView, FetchMemoryView, FragmentView, MemoryView, getMemoryHistory
-from api.views.views import  getEntry, getNovel, getNovelsAndChapters, EditEntryView, CleanEditEntryView, AnnotationView, ProvenanceView, BlacklistEntryView, ReloadCEDictView, ClearRAMView, CuratePriorityView, DismissSuggestionView
+from api.views.views import  getEntry, getNovel, getNovelsAndChapters, AddCustomPhraseView, EditEntryView, CleanEditEntryView, AnnotationView, ProvenanceView, BlacklistEntryView, ReloadCEDictView, ClearRAMView, CuratePriorityView, DismissSuggestionView
 
 urlpatterns = [
     path('entry', getEntry),
