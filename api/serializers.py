@@ -203,10 +203,16 @@ class ChineseEntrySerializer(serializers.ModelSerializer):
     # frontend's conflict display.
     suggested_pinyin = serializers.CharField(required=False, allow_null=True,
                                              default=None)
+    # g2pM's softmax confidence (0..1) for its prediction on this character;
+    # null when no model prediction was made. Shown next to the suggestion
+    # in dev mode.
+    confidence = serializers.FloatField(required=False, allow_null=True,
+                                        default=None)
 
     class Meta:
         model = Fragment
-        fields = ('pinyin', 'cchar', 'source', 'suggested_pinyin')
+        fields = ('pinyin', 'cchar', 'source', 'suggested_pinyin',
+                  'confidence')
 
 
 class PhraseEntrySerializer(serializers.Serializer):

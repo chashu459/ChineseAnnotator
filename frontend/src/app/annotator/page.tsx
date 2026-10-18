@@ -1145,14 +1145,25 @@ export default function AnnotatorPage() {
   );
 
   const dismissSuggestion = useCallback(
-    async (char: string, dictPinyin: string, suggested: string) => {
+    async (
+      char: string,
+      dictPinyin: string,
+      suggested: string,
+      prevChar: string,
+      nextChar: string,
+    ) => {
       try {
         await api.post("/annotate/dismiss", {
           char,
           dict_pinyin: dictPinyin,
           suggested_pinyin: suggested,
+          prev_char: prevChar,
+          next_char: nextChar,
         });
-        showToast("Marked as wrong — won't flag this again.", "success");
+        showToast(
+          "Marked as wrong — won't flag it in this context again.",
+          "success",
+        );
         resetLookupState();
         // Readings didn't change; only the flags need recomputing.
         const source = lastSourceRef.current;
@@ -1525,6 +1536,12 @@ export default function AnnotatorPage() {
             title={`g2pM suggests ${formatPinyin(fragment.suggested_pinyin)} instead of ${formatPinyin(fragment.pinyin)} — tap for details`}
           >
             {formatPinyin(fragment.suggested_pinyin)}
+            {fragment.confidence != null ? (
+              <span className="font-normal text-amber-500">
+                {" "}
+                · {Math.round(fragment.confidence * 100)}%
+              </span>
+            ) : null}
           </span>
         ) : null}
         <span
@@ -2079,6 +2096,15 @@ export default function AnnotatorPage() {
                       {formatPinyin(activeLookup.fragment.suggested_pinyin)}
                     </span>{" "}
                     instead of {formatPinyin(activeLookup.fragment.pinyin)}
+                    {activeLookup.fragment.confidence != null ? (
+                      <span className="text-xs text-amber-700">
+                        {" "}
+                        · {Math.round(
+                          activeLookup.fragment.confidence * 100,
+                        )}
+                        % confident
+                      </span>
+                    ) : null}
                   </p>
                   <div className="mt-2 flex gap-2">
                     <button
@@ -2097,13 +2123,24 @@ export default function AnnotatorPage() {
                     </button>
                     <button
                       type="button"
-                      onClick={() =>
+                      onClick={() => {
+                        // Dismissals are scoped to the character's immediate
+                        // neighbors within the phrase, so the same suggestion
+                        // can still flag in other words.
+                        const phraseText =
+                          activeLookup.phrase?.text ??
+                          activeLookup.fragment.cchar;
+                        const pIdx = activeLookup.phraseIndex ?? 0;
                         void dismissSuggestion(
                           activeLookup.fragment.cchar,
                           activeLookup.fragment.pinyin,
                           activeLookup.fragment.suggested_pinyin ?? "",
-                        )
-                      }
+                          pIdx > 0 ? phraseText[pIdx - 1] : "",
+                          pIdx < phraseText.length - 1
+                            ? phraseText[pIdx + 1]
+                            : "",
+                        );
+                      }}
                       className="rounded-full bg-red-600 px-4 py-1.5 text-sm font-semibold text-white transition active:bg-red-700"
                     >
                       ✗ Mark as wrong

@@ -92,8 +92,14 @@ def unparse_pinyin(pinyin):
 # --- dismissed suggestions -------------------------------------------------
 # "Mark as wrong" records (character, dictionary reading, g2pM suggestion)
 # triples in data/g2pm_dismissed.json. A dismissed triple never flags a
-# conflict again: the key captures "where the dictionary reads this char as
-# X, don't bother me when the model says Y".
+# Dismissed suggestions: data/g2pm_dismissed.json is a list of rows
+# {char, dict_pinyin, suggested_pinyin, prev_char, next_char}. The key
+# captures "where the dictionary reads this char as X in the context of
+# <prev><char><next>, don't bother me when the model says Y" -- context
+# matters because the same suggestion can be wrong in one word and right in
+# another. prev_char/next_char are the character's immediate neighbors
+# within its phrase ("" at phrase edges). Rows written before context
+# existed load with "" neighbors and therefore only match empty context.
 
 _dismissed = None
 
@@ -120,7 +126,9 @@ def _load_dismissed():
         with open(_dismissed_path()) as f:
             for row in json.load(f):
                 _dismissed.add((row["char"], row["dict_pinyin"],
-                                row["suggested_pinyin"]))
+                                row["suggested_pinyin"],
+                                row.get("prev_char", ""),
+                                row.get("next_char", "")))
     except Exception:
         pass
     return _dismissed
@@ -132,10 +140,16 @@ def clear_dismissed_cache():
     _dismissed = None
 
 
-def is_dismissed(char, dict_pinyin, suggested_pinyin):
-    """Whether this (char, dict reading -> model suggestion) was marked wrong."""
-    return (char, unparse_pinyin(dict_pinyin), unparse_pinyin(suggested_pinyin)) \
-        in _load_dismissed()
+def is_dismissed(char, dict_pinyin, suggested_pinyin, prev_char="",
+                 next_char=""):
+    """Whether this suggestion was marked wrong in this context.
+
+    Matches the (char, prev_char, next_char, dict reading -> model
+    suggestion) tuple; neighbors default to "" (phrase edges, or rows
+    written before context existed).
+    """
+    return (char, unparse_pinyin(dict_pinyin), unparse_pinyin(suggested_pinyin),
+            prev_char or "", next_char or "") in _load_dismissed()
 
 
 def is_enabled():
@@ -162,7 +176,7 @@ def model_available():
     """
     if not is_enabled():
         return False
-    return get_model() is not None
+    return _get_model() is not None
 
 
 def advisory_mode():
@@ -199,31 +213,112 @@ def get_model():
         return None
 
 
-def predict_char_pinyins(text):
-    """Run g2pM over the full text.
+def _forward_with_confidence(model, text):
+    """Run g2pM's forward pass, returning (pinyins, confidences).
+
+    G2pM.__call__ discards the softmax logits (argmax only), so this mirrors
+    its input prep and predict() forward pass using the model's own public
+    sub-methods to recover per-character prediction confidence.
+
+    Args:
+        model: a loaded G2pM instance.
+        text: the raw input string.
+
+    Returns:
+        (pinyins, confidences): pinyins is the same per-character list
+        G2pM.__call__(text, tone=True, char_split=True) would return (ASCII
+        pinyin per char, non-Chinese echoed); confidences maps the 0-based
+        character position of each polyphonic character to the model's
+        softmax confidence (0..1) for its prediction. Non-polyphonic
+        characters have no entry.
+    """
+    import numpy as np
+    from g2pM.g2pM import UNK_TOKEN, BOS_TOKEN, EOS_TOKEN, SPLIT_TOKEN
+    char2idx = model.char2idx
+    cedict = model.cedict
+    input_ids = []
+    poly_indices = []
+    pros = []
+    for idx, ch in enumerate(text):
+        input_ids.append(char2idx.get(ch, char2idx[UNK_TOKEN]))
+        prons = cedict.get(ch)
+        if prons and len(prons) > 1:
+            poly_indices.append(idx)
+            pros.append(SPLIT_TOKEN)
+        elif prons:
+            pros.append(prons[0])
+        else:
+            pros.append(ch)
+    if not poly_indices:
+        return pros, {}
+    # +1 on the indices for the BOS insert, mirroring G2pM.__call__.
+    input_ids = [char2idx[BOS_TOKEN]] + input_ids + [char2idx[EOS_TOKEN]]
+    target_idx = [i + 1 for i in poly_indices]
+    arr = np.array(input_ids, dtype=np.int32)[np.newaxis, :]
+    lengths = np.sum(np.sign(arr), axis=1)
+    max_length = int(np.max(lengths))
+    fw_emb = model.get_embedding(arr)
+    bw_emb = model.get_embedding(model.reverse_sequence(arr, lengths))
+    fw_states = bw_states = None
+    fw_hs, bw_hs = [], []
+    for i in range(max_length):
+        fw_states = model.fw_lstm_cell(fw_emb[:, i, :], fw_states)
+        bw_states = model.bw_lstm_cell(bw_emb[:, i, :], bw_states)
+        fw_hs.append(fw_states[0])
+        bw_hs.append(bw_states[0])
+    outputs = np.concatenate(
+        [np.stack(fw_hs, axis=1),
+         model.reverse_sequence(np.stack(bw_hs, axis=1), lengths)], axis=2)
+    logits = model.fc_layer(outputs[0, target_idx])
+    shifted = logits - logits.max(axis=1, keepdims=True)
+    exp = np.exp(shifted)
+    probs = exp / exp.sum(axis=1, keepdims=True)
+    best = probs.argmax(axis=1)
+    for k, pos in enumerate(poly_indices):
+        pros[pos] = model.idx2class[best[k]]
+    confidences = {pos: float(probs[k].max())
+                   for k, pos in enumerate(poly_indices)}
+    return pros, confidences
+
+
+def predict_with_confidence(text):
+    """Run g2pM over the full text, with per-character confidence.
 
     Args:
         text: the raw input string passed to AnnotationView.annotate.
 
     Returns:
-        A list with one ASCII pinyin (e.g. 'hong2') per character of `text`
-        (char_split=True guarantees 1:1 alignment), or None when g2pM is
-        disabled/unavailable or the output doesn't line up with the input.
-        Non-Chinese characters are echoed back as-is in their slots.
+        (pinyins, confidences): pinyins is a list with one ASCII pinyin
+        (e.g. 'hong2') per character of `text` (1:1 alignment, non-Chinese
+        echoed), or None when g2pM is disabled/unavailable or the output
+        doesn't line up with the input; confidences maps 0-based character
+        positions of polyphonic characters to the model's softmax confidence
+        (0..1), {} when pinyins is None.
     """
     if not text or not is_enabled():
-        return None
+        return None, {}
     model = get_model()
     if model is None:
-        return None
+        return None, {}
     try:
-        pinyins = model(text, tone=True, char_split=True)
+        pinyins, confidences = _forward_with_confidence(model, text)
     except Exception as exc:
         print(f"[polyphone] g2pM prediction failed, falling back: {exc}")
-        return None
+        return None, {}
     if not isinstance(pinyins, list) or len(pinyins) != len(text):
         print("[polyphone] g2pM output length mismatch, falling back to priority list")
-        return None
+        return None, {}
+    return pinyins, confidences
+
+
+def predict_char_pinyins(text):
+    """Run g2pM over the full text.
+
+    Backwards-compatible wrapper around predict_with_confidence returning
+    just the per-character pinyin list (or None). Prefer
+    predict_with_confidence for new code.
+    """
+    pinyins, _confidences = predict_with_confidence(text)
     return pinyins
 
 
@@ -243,7 +338,8 @@ def _distinct_readings(entries):
     return readings
 
 
-def resolve_pinyin(char, dict_pinyin, char_entries, g2pm_pinyin):
+def resolve_pinyin(char, dict_pinyin, char_entries, g2pm_pinyin, prev_char="",
+                 next_char=""):
     """Resolve one character's pinyin and its provenance.
 
     Args:
@@ -254,6 +350,9 @@ def resolve_pinyin(char, dict_pinyin, char_entries, g2pm_pinyin):
             validate the g2pM prediction against known readings; may be None.
         g2pm_pinyin: g2pM's contextual prediction for this character
             (e.g. 'zhang3'), or None.
+        prev_char / next_char: the character's immediate neighbors within
+            its phrase ("" at phrase edges), used to scope dismissals to
+            their context.
 
     Returns:
         (pinyin, source): the ASCII pinyin to use and where it came from --
@@ -264,8 +363,9 @@ def resolve_pinyin(char, dict_pinyin, char_entries, g2pm_pinyin):
     if g2pm_pinyin.lower() == dict_pinyin.lower():
         # The model agrees with the dictionary; nothing to highlight.
         return dict_pinyin, SOURCE_DICT
-    if is_dismissed(char, dict_pinyin, g2pm_pinyin):
-        # The user marked this suggestion wrong; never flag it again.
+    if is_dismissed(char, dict_pinyin, g2pm_pinyin, prev_char, next_char):
+        # The user marked this suggestion wrong in this context; never flag
+        # it again here (it can still flag in other contexts).
         return dict_pinyin, SOURCE_DICT
     candidates = _distinct_readings(char_entries) if char_entries else []
     if len(candidates) < 2:

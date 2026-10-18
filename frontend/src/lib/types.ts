@@ -5,6 +5,7 @@ export type Fragment = {
   cchar: string;
   source?: PinyinSource;
   suggested_pinyin?: string | null;
+  confidence?: number | null;
 };
 
 export type PhraseAnnotation = {
