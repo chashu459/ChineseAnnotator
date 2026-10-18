@@ -1122,5 +1122,23 @@
       "notes": "红着眼眶 - red eyed (teary eyed); 红着脸 - red faced (embarrased)",
       "priority": 200
     }
+  ],
+  "custom::卡住": [
+    {
+      "traditional": "卡住",
+      "simplified": "卡住",
+      "pinyin": "qia3 zhu4",
+      "english": "to get stuck",
+      "priority": 200
+    }
+  ],
+  "custom::四个": [
+    {
+      "traditional": "四个",
+      "simplified": "四个",
+      "pinyin": "si4 ge5",
+      "english": "four of an item",
+      "priority": 200
+    }
   ]
 }

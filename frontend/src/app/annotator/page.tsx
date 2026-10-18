@@ -602,6 +602,23 @@ function Overlay({
 
 export default function AnnotatorPage() {
   const [annotations, setAnnotations] = useState<AnnotationItem[][]>([]);
+  // Dev-only: number of characters flagged as conflicts in the current
+  // annotations (shown in the dev toolbar).
+  const conflictCount = useMemo(
+    () =>
+      annotations.reduce(
+        (total, segment) =>
+          total +
+          segment.reduce((n, item) => {
+            const fragments = isPhraseAnnotation(item) ? item.cchars : [item];
+            return (
+              n + fragments.filter((f) => f.source === "conflict").length
+            );
+          }, 0),
+        0,
+      ),
+    [annotations],
+  );
   const [selectedFragments, setSelectedFragments] = useState<Fragment[]>([]);
   const [selectionHistory, setSelectionHistory] = useState<Fragment[][]>([]);
   const [selectionFuture, setSelectionFuture] = useState<Fragment[][]>([]);
@@ -625,6 +642,9 @@ export default function AnnotatorPage() {
   // causes a hydration mismatch.
   const [devMode, setDevMode] = useState<boolean>(false);
   const [provenanceFailed, setProvenanceFailed] = useState<boolean>(false);
+  const [provenanceRunning, setProvenanceRunning] = useState<boolean>(false);
+  const [provenanceProvisioning, setProvenanceProvisioning] =
+    useState<boolean>(false);
   // Dev-only A/B: which disambiguation model the provenance pass runs.
   type AbModel = "g2pm" | "g2pw" | "llm";
   const [abModel, setAbModel] = useState<AbModel>("g2pm");
@@ -655,6 +675,10 @@ export default function AnnotatorPage() {
   // Guards the dev-only background provenance pass against stale responses
   // when the user loads another text before it finishes.
   const provenanceRequestRef = useRef<number>(0);
+  // AbortController for the in-flight provenance pass, so switching chapters
+  // (or models) while g2pW is provisioning cancels the stale requests
+  // instead of letting them pile up.
+  const provenanceAbortRef = useRef<AbortController | null>(null);
   // Last successfully annotated source, so dev-mode curation actions
   // (priority / dismiss) can refresh the reader without new input.
   const lastSourceRef = useRef<{ text: string; label: string } | null>(null);
@@ -1057,27 +1081,75 @@ export default function AnnotatorPage() {
       if (!isDevMode()) {
         return;
       }
+      // Cancel any in-flight pass: switching chapters (or models) while a
+      // slow g2pW pass is running should drop the stale work, not pile up
+      // behind it.
+      provenanceAbortRef.current?.abort();
+      const controller = new AbortController();
+      provenanceAbortRef.current = controller;
       const requestId = ++provenanceRequestRef.current;
+      setProvenanceRunning(true);
+      setProvenanceProvisioning(false);
       try {
         const segments = segmentText(sourceText);
         const provenanceResults = await Promise.all(
           segments.map((segment) =>
             segment.blank
               ? Promise.resolve([])
-              : api.post<AnnotationItem[]>("/annotate/provenance", {
-                  text: segment.text,
-                  model,
-                }),
+              : api.post<AnnotationItem[]>(
+                  "/annotate/provenance",
+                  {
+                    text: segment.text,
+                    model,
+                  },
+                  { signal: controller.signal },
+                ),
           ),
         );
         if (provenanceRequestRef.current === requestId) {
           setAnnotations(provenanceResults);
         }
-      } catch {
+      } catch (error) {
+        // Aborted passes are expected (chapter/model switch); never surface
+        // them as failures.
+        if (controller.signal.aborted) {
+          return;
+        }
         // Surface the failure in the dev legend: a silent all-dict
         // result is indistinguishable from "no conflicts" otherwise.
+        // A 503 with status "provisioning" means g2pW is still downloading
+        // in the background -- show progress, not an error.
         if (provenanceRequestRef.current === requestId) {
-          setProvenanceFailed(true);
+          const details =
+            error instanceof ApiError
+              ? (error.details as { status?: string } | null)
+              : null;
+          if (
+            error instanceof ApiError &&
+            error.status === 503 &&
+            details?.status === "provisioning"
+          ) {
+            setProvenanceProvisioning(true);
+            // Poll until the model is ready. The backend flips to
+            // "unavailable" (not "provisioning") if the background load
+            // fails, so this terminates; chapter/model switches bump the
+            // request id and stop the polling.
+            window.setTimeout(() => {
+              if (
+                provenanceRequestRef.current === requestId &&
+                !controller.signal.aborted &&
+                isDevMode()
+              ) {
+                void runProvenancePass(sourceText, model);
+              }
+            }, 5000);
+          } else {
+            setProvenanceFailed(true);
+          }
+        }
+      } finally {
+        if (provenanceRequestRef.current === requestId) {
+          setProvenanceRunning(false);
         }
       }
     },
@@ -1090,6 +1162,7 @@ export default function AnnotatorPage() {
     (model: AbModel) => {
       setAbModel(model);
       setProvenanceFailed(false);
+      setProvenanceProvisioning(false);
       const source = lastSourceRef.current;
       if (source) {
         void runProvenancePass(source.text, model);
@@ -1111,6 +1184,9 @@ export default function AnnotatorPage() {
       setAnnotating(true);
       setErrorMessage(null);
       setProvenanceFailed(false);
+      setProvenanceProvisioning(false);
+      // Drop any in-flight provenance pass from the previous text.
+      provenanceAbortRef.current?.abort();
       resetLookupState();
 
       try {
@@ -1736,8 +1812,25 @@ export default function AnnotatorPage() {
             </span>
             <span className="underline decoration-amber-500 decoration-2 underline-offset-4">
               conflict · dictionary kept
+              {conflictCount > 0 && (
+                <span className="ml-1 rounded-full bg-amber-100 px-1.5 py-px font-semibold text-amber-700">
+                  {conflictCount}
+                </span>
+              )}
             </span>
             <span className="text-slate-400">no underline = dictionary</span>
+            {provenanceRunning && !provenanceProvisioning && (
+              <span className="flex items-center gap-1 font-semibold text-slate-500">
+                <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-slate-300 border-t-slate-600" />
+                running {MODEL_LABELS[abModel]}…
+              </span>
+            )}
+            {provenanceProvisioning && (
+              <span className="flex items-center gap-1 font-semibold text-sky-600">
+                <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-sky-200 border-t-sky-600" />
+                provisioning g2pW model (~590MB)…
+              </span>
+            )}
             {provenanceFailed && (
               <span className="font-semibold text-rose-500">
                 · {MODEL_LABELS[abModel]} provenance unavailable

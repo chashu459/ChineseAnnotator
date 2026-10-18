@@ -362,6 +362,11 @@ def parsePinyin(pinyin):
     elif "U:" in word:
         # confirmed that u and u: don't appear in the same word, so this ordering is fine
         char = "U:"
+    elif "v" in word:
+        # v represents ü in pinyin
+        char = "u:"
+    elif "V" in word:
+        char = "U:"
     elif "u" in word:
         char = "u"
     elif "U" in word:

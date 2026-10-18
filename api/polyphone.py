@@ -28,6 +28,7 @@ existing priority-list behavior, so annotation never breaks.
 """
 
 import re
+import threading
 
 # g2pM emits ASCII pinyin with a tone digit, e.g. 'hong2', 'le5', 'r5'.
 # (The repo's parsePinyin in api/utils.py converts this to toned Unicode.)
@@ -87,6 +88,21 @@ def unparse_pinyin(pinyin):
     if any(v in lowered for v in "aoeiuv\u00fc"):
         return lowered + "5"
     return pinyin
+
+
+def normalize_pinyin(pinyin):
+    """Canonicalize a pinyin syllable to the dictionary convention.
+
+    unparse_pinyin() first (toned Unicode -> ASCII + tone digit), then
+    unify the ü spellings: 'v' (g2pW's output, e.g. 'nv3'), 'ü'/'Ü', and
+    the toned-ü forms all become 'u:' (the dictionary's spelling, e.g.
+    'nu:3'), so equivalent readings compare equal.
+    """
+    p = unparse_pinyin(pinyin)
+    if not isinstance(p, str):
+        return p
+    return (p.replace("v", "u:").replace("V", "u:")
+             .replace("\u00fc", "u:").replace("\u00dc", "u:"))
 
 
 # --- dismissed suggestions -------------------------------------------------
@@ -211,7 +227,9 @@ def model_available(model=None):
     Unlike predict_with_confidence (which silently falls back to None),
     this is for callers that want to fail loudly, e.g. the dev-only
     provenance endpoint. The load result is cached, so repeated calls are
-    cheap. Note: the first g2pW check downloads a ~590MB model file.
+    cheap. Note: the first g2pW check kicks off a background download of
+    the ~590MB model file (see g2pw_status); it returns False until the
+    model is ready.
     """
     if not is_enabled():
         return False
@@ -260,6 +278,12 @@ def get_model():
 
 _g2pw_converter = None
 _g2pw_failed = False
+_g2pw_provisioning = False
+_g2pw_lock = threading.Lock()
+
+G2PW_READY = "ready"
+G2PW_PROVISIONING = "provisioning"
+G2PW_UNAVAILABLE = "unavailable"
 
 
 def _g2pw_model_dir():
@@ -275,35 +299,72 @@ def _g2pw_model_dir():
         return os.path.join(os.getcwd(), "G2PWModel")
 
 
-def get_g2pw_converter():
-    """Lazily load and cache the g2pW converter. Returns None if unavailable.
+def g2pw_status():
+    """Current g2pW state: 'ready', 'provisioning', or 'unavailable'.
 
-    g2pW (GitYCC/g2pW, Apache-2.0) is a BERT-based Mandarin G2P model served
-    via ONNX -- no torch needed for inference, but the g2pw package imports
-    torch at module level, so a torch install (CPU-only is fine) is still
-    required. The ~590MB ONNX model downloads automatically on first use.
-    enable_non_tradional_chinese converts simplified input to traditional
-    for the model (it was trained on traditional text); the conversion is
-    1:1 so output alignment is preserved.
+    'provisioning' means a background thread is downloading/loading the
+    model; callers should treat it as retryable, not failed.
     """
-    global _g2pw_converter, _g2pw_failed
-    if _g2pw_converter is not None:
-        return _g2pw_converter
-    if _g2pw_failed:
-        return None
+    with _g2pw_lock:
+        if _g2pw_converter is not None:
+            return G2PW_READY
+        if _g2pw_failed:
+            return G2PW_UNAVAILABLE
+        if _g2pw_provisioning:
+            return G2PW_PROVISIONING
+        return G2PW_UNAVAILABLE
+
+
+def _provision_g2pw():
+    """Download + load the g2pW model. Runs on a daemon thread."""
+    global _g2pw_converter, _g2pw_failed, _g2pw_provisioning
     try:
         from g2pw import G2PWConverter
-        print("[polyphone] loading g2pW (first use downloads ~590MB model)...")
-        _g2pw_converter = G2PWConverter(
+        print("[polyphone] provisioning g2pW in background "
+              "(first use downloads ~590MB model)...")
+        converter = G2PWConverter(
             model_dir=_g2pw_model_dir(),
             style="pinyin",
             enable_non_tradional_chinese=True,
         )
-        return _g2pw_converter
+        with _g2pw_lock:
+            _g2pw_converter = converter
+        print("[polyphone] g2pW ready")
     except Exception as exc:
         print(f"[polyphone] g2pW unavailable: {exc}")
-        _g2pw_failed = True
-        return None
+        with _g2pw_lock:
+            _g2pw_failed = True
+    finally:
+        with _g2pw_lock:
+            _g2pw_provisioning = False
+
+
+def get_g2pw_converter():
+    """Return the cached g2pW converter, or kick off background provisioning.
+
+    Never blocks the request thread: on first use it spawns a daemon
+    thread to download/load the ~590MB model and returns None. Callers
+    should check g2pw_status() to distinguish 'provisioning' (retryable)
+    from 'unavailable' (failed).
+
+    g2pW (GitYCC/g2pW, Apache-2.0) is a BERT-based Mandarin G2P model served
+    via ONNX -- no torch needed for inference, but the g2pw package imports
+    torch at module level, so a torch install (CPU-only is fine) is still
+    required. enable_non_tradional_chinese converts simplified input to
+    traditional for the model (it was trained on traditional text); the
+    conversion is 1:1 so output alignment is preserved.
+    """
+    global _g2pw_provisioning
+    with _g2pw_lock:
+        if _g2pw_converter is not None:
+            return _g2pw_converter
+        if _g2pw_failed or _g2pw_provisioning:
+            return None
+        _g2pw_provisioning = True
+    thread = threading.Thread(target=_provision_g2pw, daemon=True,
+                              name="g2pw-provision")
+    thread.start()
+    return None
 
 
 def _predict_g2pw(text):
@@ -328,7 +389,8 @@ def _predict_g2pw(text):
             or len(results[0]) != len(text)):
         print("[polyphone] g2pW output length mismatch")
         return None, {}
-    pinyins = [pred if isinstance(pred, str) and looks_like_pinyin(pred)
+    pinyins = [normalize_pinyin(pred)
+               if isinstance(pred, str) and looks_like_pinyin(pred)
                else ch
                for ch, pred in zip(text, results[0])]
     return pinyins, {}
@@ -494,6 +556,16 @@ def resolve_pinyin(char, dict_pinyin, char_entries, g2pm_pinyin, prev_char="",
     if g2pm_pinyin.lower() == dict_pinyin.lower():
         # The model agrees with the dictionary; nothing to highlight.
         return dict_pinyin, SOURCE_DICT
+    if (prev_char or next_char) and dict_pinyin.endswith("5"):
+        # Neutral-tone grammatical particles (de5, le5, men5, zi5, ...) in
+        # multi-character phrases: if the model only differs by assigning a
+        # full tone to the same syllable, it's not a real polyphone ambiguity
+        # -- the neutral tone is grammatical. Silently keep the dictionary
+        # reading instead of flagging noise.
+        dict_base = dict_pinyin[:-1].lower()
+        model_base = g2pm_pinyin[:-1].lower()
+        if dict_base == model_base and g2pm_pinyin[-1] in "1234":
+            return dict_pinyin, SOURCE_DICT
     if is_dismissed(char, dict_pinyin, g2pm_pinyin, prev_char, next_char):
         # The user marked this suggestion wrong in this context; never flag
         # it again here (it can still flag in other contexts).

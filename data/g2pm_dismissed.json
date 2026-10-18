@@ -236,5 +236,250 @@
     "suggested_pinyin": "zhang3",
     "prev_char": "",
     "next_char": ""
+  },
+  {
+    "char": "里",
+    "dict_pinyin": "li5",
+    "suggested_pinyin": "li3",
+    "prev_char": "心",
+    "next_char": ""
+  },
+  {
+    "char": "教",
+    "dict_pinyin": "jiao1",
+    "suggested_pinyin": "jiao4",
+    "prev_char": "",
+    "next_char": ""
+  },
+  {
+    "char": "为",
+    "dict_pinyin": "wei4",
+    "suggested_pinyin": "wei2",
+    "prev_char": "因",
+    "next_char": ""
+  },
+  {
+    "char": "为",
+    "dict_pinyin": "wei4",
+    "suggested_pinyin": "wei2",
+    "prev_char": "",
+    "next_char": "何"
+  },
+  {
+    "char": "都",
+    "dict_pinyin": "dou1",
+    "suggested_pinyin": "du1",
+    "prev_char": "",
+    "next_char": ""
+  },
+  {
+    "char": "兴",
+    "dict_pinyin": "xing4",
+    "suggested_pinyin": "xing1",
+    "prev_char": "",
+    "next_char": "致"
+  },
+  {
+    "char": "长",
+    "dict_pinyin": "zhang3",
+    "suggested_pinyin": "chang2",
+    "prev_char": "生",
+    "next_char": ""
+  },
+  {
+    "char": "夫",
+    "dict_pinyin": "fu5",
+    "suggested_pinyin": "fu1",
+    "prev_char": "丈",
+    "next_char": ""
+  },
+  {
+    "char": "了",
+    "dict_pinyin": "liao3",
+    "suggested_pinyin": "le5",
+    "prev_char": "不",
+    "next_char": ""
+  },
+  {
+    "char": "还",
+    "dict_pinyin": "huan2",
+    "suggested_pinyin": "hai2",
+    "prev_char": "生",
+    "next_char": ""
+  },
+  {
+    "char": "子",
+    "dict_pinyin": "zi5",
+    "suggested_pinyin": "zi3",
+    "prev_char": "样",
+    "next_char": ""
+  },
+  {
+    "char": "头",
+    "dict_pinyin": "tou5",
+    "suggested_pinyin": "tou2",
+    "prev_char": "念",
+    "next_char": ""
+  },
+  {
+    "char": "宜",
+    "dict_pinyin": "yi5",
+    "suggested_pinyin": "yi2",
+    "prev_char": "便",
+    "next_char": ""
+  },
+  {
+    "char": "藏",
+    "dict_pinyin": "cang2",
+    "suggested_pinyin": "zang4",
+    "prev_char": "隐",
+    "next_char": ""
+  },
+  {
+    "char": "士",
+    "dict_pinyin": "shi5",
+    "suggested_pinyin": "shi4",
+    "prev_char": "护",
+    "next_char": ""
+  },
+  {
+    "char": "量",
+    "dict_pinyin": "liang5",
+    "suggested_pinyin": "liang4",
+    "prev_char": "力",
+    "next_char": ""
+  },
+  {
+    "char": "汗",
+    "dict_pinyin": "han4",
+    "suggested_pinyin": "han2",
+    "prev_char": "",
+    "next_char": "水"
+  },
+  {
+    "char": "折",
+    "dict_pinyin": "zhe1",
+    "suggested_pinyin": "zhe2",
+    "prev_char": "",
+    "next_char": "腾"
+  },
+  {
+    "char": "得",
+    "dict_pinyin": "de2",
+    "suggested_pinyin": "nu:3",
+    "prev_char": "不",
+    "next_char": ""
+  },
+  {
+    "char": "弹",
+    "dict_pinyin": "tan5",
+    "suggested_pinyin": "dan4",
+    "prev_char": "动",
+    "next_char": "不"
+  },
+  {
+    "char": "为",
+    "dict_pinyin": "wei4",
+    "suggested_pinyin": "wei2",
+    "prev_char": "",
+    "next_char": "什"
+  },
+  {
+    "char": "没",
+    "dict_pinyin": "mei2",
+    "suggested_pinyin": "mo4",
+    "prev_char": "",
+    "next_char": ""
+  },
+  {
+    "char": "好",
+    "dict_pinyin": "hao3",
+    "suggested_pinyin": "hao4",
+    "prev_char": "",
+    "next_char": "听"
+  },
+  {
+    "char": "重",
+    "dict_pinyin": "chong2",
+    "suggested_pinyin": "zhong4",
+    "prev_char": "",
+    "next_char": "生"
+  },
+  {
+    "char": "卡",
+    "dict_pinyin": "qia3",
+    "suggested_pinyin": "ka3",
+    "prev_char": "",
+    "next_char": ""
+  },
+  {
+    "char": "卡",
+    "dict_pinyin": "qia3",
+    "suggested_pinyin": "ka3",
+    "prev_char": "",
+    "next_char": "住"
+  },
+  {
+    "char": "子",
+    "dict_pinyin": "zi5",
+    "suggested_pinyin": "zi3",
+    "prev_char": "身",
+    "next_char": ""
+  },
+  {
+    "char": "得",
+    "dict_pinyin": "de5",
+    "suggested_pinyin": "de2",
+    "prev_char": "觉",
+    "next_char": ""
+  },
+  {
+    "char": "巴",
+    "dict_pinyin": "ba5",
+    "suggested_pinyin": "ba1",
+    "prev_char": "嘴",
+    "next_char": ""
+  },
+  {
+    "char": "吐",
+    "dict_pinyin": "tu4",
+    "suggested_pinyin": "tu3",
+    "prev_char": "",
+    "next_char": ""
+  },
+  {
+    "char": "将",
+    "dict_pinyin": "jiang4",
+    "suggested_pinyin": "jiang1",
+    "prev_char": "少",
+    "next_char": ""
+  },
+  {
+    "char": "劲",
+    "dict_pinyin": "jin4",
+    "suggested_pinyin": "jing4",
+    "prev_char": "使",
+    "next_char": ""
+  },
+  {
+    "char": "蹬",
+    "dict_pinyin": "deng1",
+    "suggested_pinyin": "deng4",
+    "prev_char": "",
+    "next_char": "腿"
+  },
+  {
+    "char": "识",
+    "dict_pinyin": "shi5",
+    "suggested_pinyin": "shi4",
+    "prev_char": "意",
+    "next_char": ""
+  },
+  {
+    "char": "和",
+    "dict_pinyin": "he2",
+    "suggested_pinyin": "han4",
+    "prev_char": "",
+    "next_char": ""
   }
 ]

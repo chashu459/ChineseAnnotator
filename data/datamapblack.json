@@ -211,7 +211,7 @@
       "simplified": "在前",
       "pinyin": "zai4 qian2",
       "english": "ahead/formerly/in the past",
-      "reason": "don't think it's used much. 在（前天）is more common, so... separate",
+      "reason": "don't think it's used much. 在(前天)is more common, so... separate",
       "priority": 200
     }
   ],
@@ -270,6 +270,16 @@
       "pinyin": "Si4 guo2",
       "english": "Shikoku (one of the four main islands of Japan)",
       "reason": "Don't think we care about this island for now...",
+      "priority": 200
+    }
+  ],
+  "black::了无": [
+    {
+      "traditional": "了無",
+      "simplified": "了无",
+      "pinyin": "liao3 wu2",
+      "english": "to completely lack; to have not even the slightest",
+      "reason": "Don't really care for this. we want separate.",
       "priority": 200
     }
   ]
