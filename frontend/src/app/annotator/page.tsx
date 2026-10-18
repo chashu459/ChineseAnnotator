@@ -1110,13 +1110,6 @@ export default function AnnotatorPage() {
     [resetLookupState, runProvenancePass, showToast],
   );
 
-  const refreshAnnotations = useCallback(() => {
-    const source = lastSourceRef.current;
-    if (source) {
-      void annotateSource(source.text, source.label);
-    }
-  }, [annotateSource]);
-
   const curatePriority = useCallback(
     async (phraseText: string, charIndex: number, suggested: string) => {
       try {
@@ -1136,12 +1129,19 @@ export default function AnnotatorPage() {
             : `Saved as ${result.via}: ${formatPinyin(result.pinyin)}`,
           "success",
         );
-        refreshAnnotations();
+        // The dictionary changed on the backend; re-running the provenance
+        // pass is enough — it returns full annotations (readings + flags),
+        // so no full re-annotate is needed.
+        resetLookupState();
+        const source = lastSourceRef.current;
+        if (source) {
+          await runProvenancePass(source.text);
+        }
       } catch (error) {
         showToast(getErrorMessage(error), "error");
       }
     },
-    [refreshAnnotations, showToast],
+    [resetLookupState, runProvenancePass, showToast],
   );
 
   const dismissSuggestion = useCallback(
@@ -1324,6 +1324,13 @@ export default function AnnotatorPage() {
   }
 
   function handleFragmentPress(fragment: Fragment, phrase: PhraseContext | null, phraseIndex: number | null = null) {
+    // Dev mode: a single tap always opens the lookup panel (for curation)
+    // instead of toggling pinyin visibility.
+    if (isDevMode()) {
+      void inspectLookup(fragment, phrase, phraseIndex);
+      return;
+    }
+
     // When the split-screen is open, use splitTapMode to decide behaviour.
     if (activeLookup !== null) {
       if (splitTapMode === 'lookup') {
@@ -1517,7 +1524,7 @@ export default function AnnotatorPage() {
             className={`text-[0.62rem] font-semibold leading-3 text-amber-600 ${hidePinyin ? "invisible" : ""}`}
             title={`g2pM suggests ${formatPinyin(fragment.suggested_pinyin)} instead of ${formatPinyin(fragment.pinyin)} — tap for details`}
           >
-            g2pM: {formatPinyin(fragment.suggested_pinyin)}
+            {formatPinyin(fragment.suggested_pinyin)}
           </span>
         ) : null}
         <span
