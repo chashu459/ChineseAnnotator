@@ -1103,5 +1103,24 @@
       "english": "secondary bedroom",
       "priority": 200
     }
+  ],
+  "custom::清楚": [
+    {
+      "traditional": "清楚",
+      "simplified": "清楚",
+      "pinyin": "qing1 chu3",
+      "english": "clear/distinct/to understand thoroughly/to be clear about",
+      "priority": 200
+    }
+  ],
+  "custom::红着": [
+    {
+      "simplified": "红着",
+      "traditional": "红着",
+      "pinyin": "hong2 zhe5",
+      "english": "Being red; turning red; maintaining a red state.\n",
+      "notes": "红着眼眶 - red eyed (teary eyed); 红着脸 - red faced (embarrased)",
+      "priority": 200
+    }
   ]
 }

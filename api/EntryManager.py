@@ -35,6 +35,7 @@
 #         return ''.join(output)
 
 from bisect import bisect
+import functools
 import json
 import os
 import timeit
@@ -288,6 +289,8 @@ class EntryManagerSingleton(object):
             self.tradToSimpMap = data
             
         self.loaded = True
+
+        self._get_cached.cache_clear()
             
         # with open(os.path.join(DATA_DIR, "keylistA.json")) as f:
         #     data = json.load(f)
@@ -328,7 +331,23 @@ class EntryManagerSingleton(object):
         self.dictPriority = {}
         
         self.loaded = False
+
+        self._get_cached.cache_clear()
         
+    def reloadPriorities(self):
+        """Re-read only the priority datamap (after priority.json changed)."""
+        with open(os.path.join(DATA_DIR, f"datamap{PRIORITY}.json")) as f:
+            data = json.load(f)
+            self.dictPriority = data
+        self._get_cached.cache_clear()
+
+    def reloadCustoms(self):
+        """Re-read only the custom datamap (after custom.json changed)."""
+        with open(os.path.join(DATA_DIR, f"datamap{CUSTOM}.json")) as f:
+            data = json.load(f)
+            self.dictCustom = data
+        self._get_cached.cache_clear()
+
     def reload(self):
         self.clear()
         self.load()
@@ -382,6 +401,18 @@ class EntryManagerSingleton(object):
         # print(f"A:{timeit.default_timer() - start_time}")
 
     def get(self, phrase, trad=False):
+        """Merged dictionary entries for a phrase, sorted by priority.
+
+        Results are memoized with an LRU cache: phrases repeat heavily
+        within a text, so the blacklist/priority merge + sort runs once per
+        unique phrase. The cache is cleared whenever the underlying data is
+        reloaded (see clear()/load()). Callers must treat the returned list
+        as read-only.
+        """
+        return self._get_cached(phrase, trad)
+
+    @functools.lru_cache(maxsize=16384)
+    def _get_cached(self, phrase, trad=False):
 
         # defaultEntries = self.dictCache.get(f"default::{phrase}")
         # surnameEntries = self.dictCache.get(f"surname::{phrase}")
@@ -443,7 +474,9 @@ class EntryManagerSingleton(object):
         # entries = priorityEntries + customEntries + userEntries + defaultEntries + surnameEntries + variantEntries
 
         # start_time = timeit.default_timer()
-        entries = dictEntries
+        # Fresh list: dictEntries is a shared cached list; extending it in
+        # place would append the custom entries again on every repeated call.
+        entries = list(dictEntries)
 
         entries.extend(customEntries)
         # def inPriority(entry):

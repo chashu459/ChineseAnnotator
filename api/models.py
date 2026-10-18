@@ -77,8 +77,15 @@ class Memory(models.Model):
 #     english = models.CharField(max_length=200, default="")
 
 class ChineseEntry(dict):
-    def __init__(self, pinyin, cchar):
-        dict.__init__(self, pinyin=pinyin, cchar=cchar)
+    # source: provenance of the pinyin -- "dict" (dictionary / priority list),
+    # "g2pm" (g2pM model overrode the dictionary, see api/polyphone.py), or
+    # "conflict" (g2pM disagreed but its reading isn't a known candidate, so
+    # the dictionary reading was kept). The frontend highlights "g2pm" and
+    # "conflict" in dev mode only.
+    def __init__(self, pinyin, cchar, source="dict", suggested_pinyin=None,
+                 confidence=None):
+        dict.__init__(self, pinyin=pinyin, cchar=cchar, source=source,
+                      suggested_pinyin=suggested_pinyin, confidence=confidence)
 
     def __str__(self):
         return f"ChineseEntry({self['pinyin']},{self['cchar']},{self['english']})"

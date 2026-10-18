@@ -1,6 +1,11 @@
+export type PinyinSource = "dict" | "g2pm" | "conflict";
+
 export type Fragment = {
   pinyin: string;
   cchar: string;
+  source?: PinyinSource;
+  suggested_pinyin?: string | null;
+  confidence?: number | null;
 };
 
 export type PhraseAnnotation = {

@@ -614,5 +614,33 @@
     "pinyin": "pang4",
     "english": "fat/plump",
     "notes": "healthy fat."
+  },
+  {
+    "traditional": "看",
+    "simplified": "看",
+    "pinyin": "kan4",
+    "english": "to see; to look at/to read/to watch/to visit; to call on/to consider; to regard as/to look after/to treat (a patient or illness)/to depend on/to feel (that)/(after a verb) to give it a try/to watch out for",
+    "reason": "g2pM curation"
+  },
+  {
+    "traditional": "几",
+    "simplified": "几",
+    "pinyin": "ji3",
+    "english": "how much/how many/several/a few",
+    "reason": "g2pM curation"
+  },
+  {
+    "traditional": "妻子",
+    "simplified": "妻子",
+    "pinyin": "qi1 zi5",
+    "english": "wife and children",
+    "reason": "g2pM curation"
+  },
+  {
+    "traditional": "瞇",
+    "simplified": "眯",
+    "pinyin": "mi1",
+    "english": "to narrow one's eyes/to squint/(dialect) to take a nap",
+    "reason": "g2pM curation"
   }
 ]

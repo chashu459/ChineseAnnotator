@@ -1,7 +1,7 @@
 from django.urls import path, include
 
 from api.views.memoryView import CleanMemoryView, CreateMemoryView, DestroyMemoryView, FetchMemoryView, FragmentView, MemoryView, getMemoryHistory
-from api.views.views import  getEntry, getNovel, getNovelsAndChapters, EditEntryView, CleanEditEntryView, AnnotationView, BlacklistEntryView, ReloadCEDictView, ClearRAMView
+from api.views.views import  getEntry, getNovel, getNovelsAndChapters, AddCustomPhraseView, EditEntryView, CleanEditEntryView, AnnotationView, ProvenanceView, BlacklistEntryView, ReloadCEDictView, ClearRAMView, CuratePriorityView, DismissSuggestionView
 
 urlpatterns = [
     path('entry', getEntry),
@@ -16,7 +16,11 @@ urlpatterns = [
     # path('count', CountEntryView.as_view()),
     path('entry/edit', EditEntryView.as_view()),
     path('entry/edit/clean', CleanEditEntryView.as_view()),
+    path('entry/custom', AddCustomPhraseView.as_view()),
     path('annotate', AnnotationView.as_view()),
+    path('annotate/provenance', ProvenanceView.as_view()),
+    path('annotate/curate', CuratePriorityView.as_view()),
+    path('annotate/dismiss', DismissSuggestionView.as_view()),
     # path('update/<pk>', UpdateEntryView.as_view()),
     path('blacklist', BlacklistEntryView.as_view()),
     # path('blacklist/reload', ReloadBlacklistEntryView.as_view()),

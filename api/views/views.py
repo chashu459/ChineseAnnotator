@@ -28,9 +28,11 @@ from api.serializers import (AnnotationSerializer, BlacklistEntrySerializer,
                              PhraseEntrySerializer, ReloadEntrySerializer,
                              UpdateEntrySerializer,EditEntrySerializer)
 from api.Trie import (Trie, TradTrie)
+from api import polyphone
 from api.utils import (BLACKLIST, CUSTOM, DICT, PRIORITY, DEFAULT_OWNER, DEFAULT_PRIORITY, MAIN_PRIORITY, MAX_PRIORITY, NBSP, SESSIONS,
                        OwnerOrDefault, USER_PRIORITY, isChinese, parsePinyin,
-                       reloadCEDict, openChapterText, listNovels)
+                       reloadCEDict, openChapterText, listNovels,
+                       setupPriorityEntries, setupCustomEntries)
 
 # CACHE_TTL = getattr(settings, 'CACHE_TTL', DEFAULT_TIMEOUT)
 
@@ -251,7 +253,68 @@ class AnnotationView(APIView):
 
         return lst
 
-    def annotate(self, owner: str, text: str):
+    def _resolve_phrase_pinyins(self, phrase, entries, poly_pinyins, pos, trad,
+                              confidences=None):
+        """Resolve per-character pinyin and provenance for a phrase.
+
+        Starts from the top-priority entry's readings, then lets g2pM's
+        contextual predictions override individual characters -- for
+        single-character phrases and for phrase-internal ambiguities like
+        长长 (e.g. 头发长长了 -> zhang3 chang2)
+        alike -- constrained to known dictionary readings (see
+        api/polyphone.py). Returns a list of (pinyin, source, suggested,
+        confidence) tuples, one per character: the ASCII pinyin to use, its
+        provenance ('dict' | 'g2pm' | 'conflict'), g2pM's proposed reading
+        when the source is 'conflict' (None otherwise), and the model's
+        softmax confidence (0..1) for its prediction when one was made
+        (None otherwise).
+        """
+        confidences = confidences or {}
+        default_pinyins = [p for p in entries[0]['pinyin'].split(" ") if p != "-"]
+        resolved_chars = []
+        for i, ch in enumerate(phrase):
+            if i >= len(default_pinyins):
+                break
+            dict_pinyin = default_pinyins[i]
+            g2pm_pinyin = None
+            if (poly_pinyins is not None and isChinese(ch)
+                    and pos + i < len(poly_pinyins)):
+                candidate = poly_pinyins[pos + i]
+                if (polyphone.looks_like_pinyin(candidate)
+                        and candidate.lower() != dict_pinyin.lower()):
+                    g2pm_pinyin = candidate
+            if g2pm_pinyin is None:
+                resolved_chars.append(
+                    (dict_pinyin, polyphone.SOURCE_DICT, None, None))
+                continue
+            # The model disagrees with the dictionary on this character;
+            # only let it win when its reading is a known reading of the
+            # character on its own.
+            char_entries = EntryManager.get(ch, trad=trad)
+            # Dismissals are scoped to the character's immediate neighbors
+            # within the phrase, so marking a suggestion wrong in one word
+            # doesn't suppress it in others.
+            prev_char = phrase[i - 1] if i > 0 else ""
+            next_char = phrase[i + 1] if i < len(phrase) - 1 else ""
+            resolved, source = polyphone.resolve_pinyin(
+                ch, dict_pinyin, char_entries, g2pm_pinyin,
+                prev_char=prev_char, next_char=next_char)
+            suggested = g2pm_pinyin if source == polyphone.SOURCE_CONFLICT else None
+            confidence = confidences.get(pos + i)
+            resolved_chars.append((resolved, source, suggested, confidence))
+        return resolved_chars
+
+    def annotate(self, owner: str, text: str, with_provenance=False, model=None):
+        """Annotate text with pinyin.
+
+        with_provenance: run the disambiguation model to compute
+            per-character pinyin provenance ('dict' | 'g2pm' | 'conflict').
+            In advisory mode (the default) the model never changes a reading,
+            so the fast path (with_provenance=False) skips it entirely; the
+            frontend calls /annotate/provenance in the background for
+            dev-mode highlighting.
+        model: "g2pm" or "g2pw"; defaults to polyphone.active_model().
+        """
         print("===============================")
         print(text)
         # TODO: return only simplified?
@@ -284,9 +347,31 @@ class AnnotationView(APIView):
 
         print(fragments)
         
-        lst = list()
+        # g2pM polyphone (多音字) disambiguation: one contextual pinyin
+        # prediction per character of the original text. char_split=True
+        # guarantees the predictions align 1:1 with text. See api/polyphone.py.
+        # In advisory mode the model never overrides a reading, so the fast
+        # path skips it entirely (all sources stay 'dict'); the provenance
+        # endpoint runs it in the background for dev-mode highlighting.
+        run_g2pm = with_provenance or not polyphone.advisory_mode()
+        poly_pinyins = None
+        poly_confidences = {}
+        if run_g2pm:
+            poly_pinyins, poly_confidences = polyphone.predict_with_confidence(
+                text, model=model)
+
+        # fragments concatenate back to text in order; record each
+        # fragment's start offset so single-character phrases can look up
+        # their g2pM prediction by absolute character index.
+        frag_start = 0
+        frag_starts = []
         for fragment in fragments:
-            
+            frag_starts.append(frag_start)
+            frag_start += len(fragment)
+
+        lst = list()
+        for frag_index, fragment in enumerate(fragments):
+            pos = frag_starts[frag_index]
             remaining = fragment
             # print(remaining)
             while remaining:
@@ -308,6 +393,7 @@ class AnnotationView(APIView):
 
                     # remove non chinese cahrs
                     remaining = remaining[firstCChar:]
+                    pos += firstCChar
                     # print("remainingAfterRemoval: '" + remaining + "'")
                 else:
                     # findBest is simply greedy algo, find the longest
@@ -320,6 +406,7 @@ class AnnotationView(APIView):
                         # print("phrase: '" + phrase + "'")
                     if not phrase:
                         remaining = remaining[1:]
+                        pos += 1
                         # Unknown, so put dummy entry.
                         phraselst = [ChineseEntry("zzz", "@")]
                         lst.append(PhraseEntry(phraselst))
@@ -336,7 +423,9 @@ class AnnotationView(APIView):
                         entries = EntryManager.get(phrase, trad=trad)
                         # print(entries)
                         if(entries):
-                            entry = entries[0]
+                            resolved_chars = self._resolve_phrase_pinyins(
+                                phrase, entries, poly_pinyins, pos, trad,
+                                confidences=poly_confidences)
                             # print("entry: '" +  + "'")
                             # pprint(entry)
 
@@ -346,30 +435,36 @@ class AnnotationView(APIView):
                             # pinyin = entry[0].split(" ")
                             # english = entry[1]
 
-                            pinyin = entry['pinyin'].split(" ")
-                            while (pinyin.count("-")):
-                                pinyin.remove("-") 
                             # english = entry['english']
 
                             # print(pinyin)
                             # pinyin = dict.getPinYin(self.phrase).split(" ")
-                            if len(phrase) != len(pinyin):
+                            if len(phrase) != len(resolved_chars):
                                 print(
                                     "pinyin and phrase have different lengths O.o")
                                 print(f"phrase: {phrase}")
-                                print(f"pinyin: {pinyin}")
+                                print(f"pinyin: {[c[0] for c in resolved_chars]}")
                                 raise "pinyin and phrase have different lengths O.o"
 
                             # push all phrases
                             phraselst = []
                             for i in range(len(phrase)):
+                                pinyin, source, suggested, confidence = \
+                                    resolved_chars[i]
                                 phraselst.append(
-                                    ChineseEntry(parsePinyin(pinyin[i]), phrase[i])
+                                    ChineseEntry(
+                                        parsePinyin(pinyin), phrase[i],
+                                        source=source,
+                                        suggested_pinyin=(parsePinyin(suggested)
+                                                          if suggested else None),
+                                        confidence=confidence,
+                                    )
                                 )
                             lst.append(PhraseEntry(phraselst))
                         else:
                             #Note: If this appears, it means Trie and EntryManagers are out of sync. Probablyj ust need to reloadCEDict
                             print(f"ERROR: Unable to find entry {phrase}")
+                        pos += len(phrase)
         return lst
 
     def post(self, request, format=None):
@@ -407,6 +502,282 @@ class AnnotationView(APIView):
 
         return Response({'Bad Request': 'Invalid data...'}, status=status.HTTP_400_BAD_REQUEST)
 
+
+
+class ProvenanceView(APIView):
+    """Dev-only background pass: re-annotate text with model provenance.
+
+    The main /annotate endpoint skips the model for speed (in advisory mode
+    the model never changes a reading anyway). The frontend calls this
+    endpoint in the background when ?dev=1 is set and swaps the result in to
+    highlight model/dictionary disagreements.
+
+    POST {text, model?}: model is "g2pm" (default) or "g2pw" for A/B
+    testing the disambiguation models against each other.
+    """
+    def post(self, request, format=None):
+        data = request.data if isinstance(request.data, dict) else {}
+        text = data.get('text', '')
+        if not isinstance(text, str) or not text.strip():
+            return Response([], status=status.HTTP_200_OK)
+        model = data.get('model') or polyphone.active_model()
+        if model not in polyphone.G2P_MODELS:
+            return Response({"detail": "model must be 'g2pm' or 'g2pw'"},
+                            status=status.HTTP_400_BAD_REQUEST)
+        # Fail loudly (dev-only endpoint): silently returning all-dict would
+        # make missing-model deployments indistinguishable from "no conflicts".
+        if not polyphone.model_available(model):
+            return Response({"detail": f"{model} model unavailable"},
+                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        data = AnnotationView().annotate("default", text, with_provenance=True,
+                                         model=model)
+        responseData = [PhraseEntrySerializer(phrase).data if isinstance(phrase, PhraseEntry)
+                        else ChineseEntrySerializer(phrase).data for phrase in data]
+        return Response(responseData, status=status.HTTP_200_OK)
+
+
+def _read_json_list(path):
+    """Read a JSON list file; return [] when it does not exist yet."""
+    try:
+        with open(path) as f:
+            data = json.load(f)
+            return data if isinstance(data, list) else []
+    except FileNotFoundError:
+        return []
+
+
+def _data_path(filename):
+    return os.path.join(str(settings.BASE_DIR / "data"), filename)
+
+
+class CuratePriorityView(APIView):
+    """One-tap curation: make g2pM's suggested reading win for a phrase.
+
+    POST {phrase, char_index, suggested_pinyin}: takes the phrase's current
+    top-priority entry, swaps the reading at char_index for the suggestion,
+    and persists it so the suggestion becomes the displayed reading:
+    - if a dictionary entry with the corrected pinyin already exists, a
+      priority.json entry boosts that entry (carrying its own traditional
+      form and definition, not the top entry's) to USER_PRIORITY;
+    - otherwise a custom.json entry adds the new reading (CUSTOM_PRIORITY),
+      with the english copied from the top entry as a fallback.
+    The datamap is rebuilt and EntryManager reloaded, so the change is live
+    immediately. suggested_pinyin may be toned ('háng') or ASCII ('hang2').
+    """
+    def post(self, request, format=None):
+        data = request.data if isinstance(request.data, dict) else {}
+        phrase = data.get("phrase", "")
+        suggested = polyphone.unparse_pinyin(data.get("suggested_pinyin", ""))
+        try:
+            char_index = int(data.get("char_index", 0))
+        except (TypeError, ValueError):
+            return Response({"detail": "char_index must be an integer"},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        if not isinstance(phrase, str) or not phrase.strip():
+            return Response({"detail": "phrase is required"},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if not 0 <= char_index < len(phrase):
+            return Response({"detail": "char_index out of range"},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if not polyphone.looks_like_pinyin(suggested):
+            return Response({"detail": "suggested_pinyin is not valid pinyin"},
+                            status=status.HTTP_400_BAD_REQUEST)
+        model = data.get("model") or polyphone.active_model()
+        if model not in polyphone.G2P_MODELS:
+            return Response({"detail": "model must be 'g2pm' or 'g2pw'"},
+                            status=status.HTTP_400_BAD_REQUEST)
+        model_label = "g2pW" if model == polyphone.G2P_MODEL_G2PW else "g2pM"
+
+        entries = EntryManager.get(phrase)
+        if not entries:
+            return Response({"detail": "phrase not in dictionary"},
+                            status=status.HTTP_404_NOT_FOUND)
+        top = entries[0]
+        parts = [p for p in top["pinyin"].split(" ") if p]
+        if char_index >= len(parts):
+            return Response({"detail": "pinyin/character length mismatch"},
+                            status=status.HTTP_400_BAD_REQUEST)
+        parts[char_index] = suggested
+        corrected = " ".join(parts)
+
+        match = next((e for e in entries if e.get("pinyin") == corrected),
+                     None)
+        if match is not None:
+            # The reading already exists in the dictionary: boost the entry
+            # that actually carries it -- with its own traditional form and
+            # definition -- rather than the top entry's.
+            path = _data_path("priority.json")
+            rows = _read_json_list(path)
+            want = {
+                "traditional": match["traditional"],
+                "simplified": match["simplified"],
+                "pinyin": corrected,
+                "english": match.get("english", ""),
+            }
+            row = next((r for r in rows
+                        if r.get("simplified") == want["simplified"]
+                        and r.get("pinyin") == want["pinyin"]), None)
+            if row is None:
+                row = dict(want, reason=f"{model_label} curation")
+                rows.append(row)
+                changed = True
+            else:
+                # A row for this reading already exists: refresh any stale
+                # fields (rows written before the definition/traditional fix
+                # carry the top entry's values). A hand-written reason is
+                # left alone.
+                changed = False
+                for key, value in want.items():
+                    if row.get(key) != value:
+                        row[key] = value
+                        changed = True
+            if changed:
+                with open(path, "w") as f:
+                    json.dump(rows, f, ensure_ascii=False, indent=2)
+                setupPriorityEntries()
+                EntryManager.reloadPriorities()
+            return Response({"ok": True, "via": "priority",
+                             "pinyin": corrected, "already": not changed},
+                            status=status.HTTP_200_OK)
+
+        # New reading; add it via custom.json.
+        path = _data_path("custom.json")
+        rows = _read_json_list(path)
+        done = any(r.get("simplified") == top["simplified"]
+                   and r.get("pinyin") == corrected for r in rows)
+        if not done:
+            rows.append({
+                "traditional": top["traditional"],
+                "simplified": top["simplified"],
+                "pinyin": corrected,
+                "english": top.get("english", ""),
+            })
+            with open(path, "w") as f:
+                json.dump(rows, f, ensure_ascii=False, indent=2)
+            setupCustomEntries()
+            EntryManager.reloadCustoms()
+        return Response({"ok": True, "via": "custom",
+                         "pinyin": corrected, "already": done},
+                        status=status.HTTP_200_OK)
+
+
+class AddCustomPhraseView(APIView):
+    """Add a custom phrase: writes to data/custom.json (live in annotation)
+    and logs an EditEntry record (type='custom') for review, as the "Add
+    custom phrase" modal previously did via /entry/edit alone.
+
+    POST {simplified, traditional?, pinyin, english?, notes?}: appends a
+    custom.json row (deduped on simplified+pinyin), rebuilds the custom
+    datamap and reloads it so the phrase annotates immediately. Pinyin is
+    space-separated ASCII readings, e.g. "ni3 hao3".
+    """
+
+    def post(self, request, format=None):
+        data = request.data if isinstance(request.data, dict) else {}
+        simplified = (data.get("simplified") or "").strip()
+        traditional = (data.get("traditional") or "").strip() or simplified
+        pinyin = " ".join(
+            polyphone.unparse_pinyin(p)
+            for p in (data.get("pinyin") or "").strip().split()
+        )
+        english = (data.get("english") or "").strip()
+        notes = (data.get("notes") or "").strip()
+
+        if not simplified:
+            return Response({"detail": "simplified is required"},
+                            status=status.HTTP_400_BAD_REQUEST)
+        parts = [p for p in pinyin.split(" ") if p]
+        if not parts or not all(polyphone.looks_like_pinyin(p) for p in parts):
+            return Response({"detail": "pinyin is not valid"},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        # 1. custom.json -- this is what makes the phrase live in annotation.
+        path = _data_path("custom.json")
+        rows = _read_json_list(path)
+        done = any(r.get("simplified") == simplified
+                   and r.get("pinyin") == pinyin for r in rows)
+        if not done:
+            rows.append({
+                "traditional": traditional,
+                "simplified": simplified,
+                "pinyin": pinyin,
+                "english": english,
+            })
+            with open(path, "w") as f:
+                json.dump(rows, f, ensure_ascii=False, indent=2)
+            setupCustomEntries()
+            EntryManager.reloadCustoms()
+
+        # 2. EditEntry log, as the modal previously did via /entry/edit.
+        serializer = EditEntrySerializer(data={
+            "type": "custom",
+            "simplified": simplified,
+            "traditional": traditional,
+            "pinyin": pinyin,
+            "english": english,
+            **({"notes": notes} if notes else {}),
+        })
+        if serializer.is_valid():
+            serializer.save()
+
+        return Response({"ok": True, "already": done},
+                        status=status.HTTP_200_OK)
+
+
+class DismissSuggestionView(APIView):
+    """Mark a g2pM suggestion as wrong in its context.
+
+    POST {char, dict_pinyin, suggested_pinyin, prev_char?, next_char?}:
+    records the tuple in data/g2pm_dismissed.json so resolve_pinyin never
+    flags that (character, dictionary reading -> model suggestion) direction
+    again *in that context* -- the character's immediate neighbors within
+    its phrase ("" at phrase edges). The same suggestion can still flag in
+    other contexts. Pinyin may be toned or ASCII.
+    """
+    def post(self, request, format=None):
+        data = request.data if isinstance(request.data, dict) else {}
+        char = data.get("char", "")
+        dict_pinyin = polyphone.unparse_pinyin(data.get("dict_pinyin", ""))
+        suggested = polyphone.unparse_pinyin(data.get("suggested_pinyin", ""))
+        prev_char = data.get("prev_char", "") or ""
+        next_char = data.get("next_char", "") or ""
+
+        if not (isinstance(char, str) and len(char.strip()) == 1
+                and isChinese(char.strip())):
+            return Response({"detail": "char must be a single Chinese character"},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if not polyphone.looks_like_pinyin(dict_pinyin):
+            return Response({"detail": "dict_pinyin is not valid pinyin"},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if not polyphone.looks_like_pinyin(suggested):
+            return Response({"detail": "suggested_pinyin is not valid pinyin"},
+                            status=status.HTTP_400_BAD_REQUEST)
+        for name, value in (("prev_char", prev_char), ("next_char", next_char)):
+            if not (isinstance(value, str) and len(value) <= 1
+                    and (value == "" or isChinese(value))):
+                return Response(
+                    {"detail": f"{name} must be a single Chinese character or empty"},
+                    status=status.HTTP_400_BAD_REQUEST)
+
+        path = _data_path("g2pm_dismissed.json")
+        rows = _read_json_list(path)
+        row = {"char": char.strip(), "dict_pinyin": dict_pinyin,
+               "suggested_pinyin": suggested,
+               "prev_char": prev_char, "next_char": next_char}
+        done = any(r.get("char") == row["char"]
+                   and r.get("dict_pinyin") == row["dict_pinyin"]
+                   and r.get("suggested_pinyin") == row["suggested_pinyin"]
+                   and r.get("prev_char", "") == row["prev_char"]
+                   and r.get("next_char", "") == row["next_char"]
+                   for r in rows)
+        if not done:
+            rows.append(row)
+            with open(path, "w") as f:
+                json.dump(rows, f, ensure_ascii=False, indent=2)
+        polyphone.clear_dismissed_cache()
+        return Response({"ok": True, "already": done},
+                        status=status.HTTP_200_OK)
 
 
 class ReloadCEDictView(APIView):

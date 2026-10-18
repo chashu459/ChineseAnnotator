@@ -36,6 +36,14 @@ import {
 const NBSP = "\u00a0";
 const MANUAL_READER_DRAFT_KEY = "annotator.manualReaderDraft";
 
+// Evaluated at call time so background work (e.g. the dev-only provenance
+// pass) never acts on a stale closure value. The devMode *state* below is
+// still what render output keys off.
+function isDevMode(): boolean {
+  if (typeof window === "undefined") return false;
+  return new URLSearchParams(window.location.search).get("dev") === "1";
+}
+
 type SecondaryPanel = "library" | "review" | "menu" | null;
 type ViewMode = "reader" | "dictionary";
 
@@ -49,6 +57,7 @@ type PhraseContext = {
 type LookupTarget = {
   fragment: Fragment;
   phrase: PhraseContext | null;
+  phraseIndex: number | null;
 };
 
 function segmentText(text: string) {
@@ -608,6 +617,19 @@ export default function AnnotatorPage() {
   const [loadingChapter, setLoadingChapter] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("reader");
+  // Dev-only pinyin provenance highlights, enabled with ?dev=1 in the URL.
+  // Underline marks characters whose reading came from the g2pM model or
+  // conflicted with the dictionary (see api/polyphone.py). Read in an
+  // effect, not the useState initializer, so the server render and the
+  // first client render agree -- reading window.location during SSR
+  // causes a hydration mismatch.
+  const [devMode, setDevMode] = useState<boolean>(false);
+  const [provenanceFailed, setProvenanceFailed] = useState<boolean>(false);
+  // Dev-only A/B: which disambiguation model the provenance pass runs.
+  const [abModel, setAbModel] = useState<"g2pm" | "g2pw">("g2pm");
+  useEffect(() => {
+    setDevMode(isDevMode());
+  }, []);
   const [activeLookup, setActiveLookup] = useState<LookupTarget | null>(null);
   const [fragmentLookupEntries, setFragmentLookupEntries] = useState<DictionaryEntry[]>(
     [],
@@ -624,11 +646,17 @@ export default function AnnotatorPage() {
   const [toastTone, setToastTone] = useState<"neutral" | "success">("neutral");
   const lookupRequestId = useRef(0);
   const previousViewModeRef = useRef<ViewMode>("reader");
+  // Guards the dev-only background provenance pass against stale responses
+  // when the user loads another text before it finishes.
+  const provenanceRequestRef = useRef<number>(0);
+  // Last successfully annotated source, so dev-mode curation actions
+  // (priority / dismiss) can refresh the reader without new input.
+  const lastSourceRef = useRef<{ text: string; label: string } | null>(null);
   const toastTimeoutRef = useRef<number | null>(null);
   const longPressTimeoutRef = useRef<number | null>(null);
   const longPressTriggeredRef = useRef(false);
   const dragSelectActiveRef = useRef(false);
-  const longPressOriginRef = useRef<{ fragment: Fragment; phrase: PhraseContext | null } | null>(null);
+  const longPressOriginRef = useRef<{ fragment: Fragment; phrase: PhraseContext | null; phraseIndex: number | null } | null>(null);
   const [dragSelectFragments, setDragSelectFragments] = useState<Fragment[]>([]);
   const [addPhraseModalOpen, setAddPhraseModalOpen] = useState(false);
   const [addPhrasePinyin, setAddPhrasePinyin] = useState("");
@@ -857,11 +885,11 @@ export default function AnnotatorPage() {
     setIsDividerDragging(false);
   }
 
-  function beginLongPress(fragment: Fragment, phrase: PhraseContext | null) {
+  function beginLongPress(fragment: Fragment, phrase: PhraseContext | null, phraseIndex: number | null = null) {
     clearLongPressTimeout();
     longPressTriggeredRef.current = false;
     dragSelectActiveRef.current = false;
-    longPressOriginRef.current = { fragment, phrase };
+    longPressOriginRef.current = { fragment, phrase, phraseIndex };
 
     longPressTimeoutRef.current = window.setTimeout(() => {
       longPressTriggeredRef.current = true;
@@ -901,7 +929,7 @@ export default function AnnotatorPage() {
     });
   }
 
-  function handleFragmentPointerUp(fragment: Fragment, phrase: PhraseContext | null) {
+  function handleFragmentPointerUp(fragment: Fragment, phrase: PhraseContext | null, phraseIndex: number | null = null) {
     clearLongPressTimeout();
 
     if (!dragSelectActiveRef.current) {
@@ -933,7 +961,7 @@ export default function AnnotatorPage() {
         }, 0);
       } else {
         // Single fragment — fall through to normal long-press lookup.
-        setTimeout(() => void inspectLookup(fragment, phrase), 0);
+        setTimeout(() => void inspectLookup(fragment, phrase, phraseIndex), 0);
       }
 
       return fragments;
@@ -964,8 +992,8 @@ export default function AnnotatorPage() {
   ) {
     setAddPhraseSubmitting(true);
     try {
-      await api.post('/entry/edit', { type: 'custom', simplified, traditional: simplified, pinyin, english, ...(notes.trim() ? { notes } : {}) });
-      showToast('Phrase entry submitted.', 'success');
+      await api.post('/entry/custom', { simplified, traditional: simplified, pinyin, english, ...(notes.trim() ? { notes } : {}) });
+      showToast('Custom phrase added.', 'success');
       setAddPhraseModalOpen(false);
       clearDragSelect();
     } catch (error) {
@@ -1012,6 +1040,58 @@ export default function AnnotatorPage() {
       ? chapterList[chapterIndex + 1]
       : null;
 
+  // Dev-only (?dev=1): run the provenance pass in the background
+  // and swap the highlights in when it finishes. Adds provenance flags on
+  // top of the fast pass; a stale response must never overwrite a newer
+  // annotation. isDevMode() is read live so this never depends on a stale
+  // closure. `model` selects the disambiguation model for A/B testing
+  // ("g2pm" | "g2pw").
+  const runProvenancePass = useCallback(
+    async (sourceText: string, model: "g2pm" | "g2pw" = "g2pm") => {
+      if (!isDevMode()) {
+        return;
+      }
+      const requestId = ++provenanceRequestRef.current;
+      try {
+        const segments = segmentText(sourceText);
+        const provenanceResults = await Promise.all(
+          segments.map((segment) =>
+            segment.blank
+              ? Promise.resolve([])
+              : api.post<AnnotationItem[]>("/annotate/provenance", {
+                  text: segment.text,
+                  model,
+                }),
+          ),
+        );
+        if (provenanceRequestRef.current === requestId) {
+          setAnnotations(provenanceResults);
+        }
+      } catch {
+        // Surface the failure in the dev legend: a silent all-dict
+        // result is indistinguishable from "no conflicts" otherwise.
+        if (provenanceRequestRef.current === requestId) {
+          setProvenanceFailed(true);
+        }
+      }
+    },
+    [],
+  );
+
+  // Dev-only A/B toggle: switch the disambiguation model and re-run the
+  // provenance pass on the current text.
+  const switchAbModel = useCallback(
+    (model: "g2pm" | "g2pw") => {
+      setAbModel(model);
+      setProvenanceFailed(false);
+      const source = lastSourceRef.current;
+      if (source) {
+        void runProvenancePass(source.text, model);
+      }
+    },
+    [runProvenancePass],
+  );
+
   const annotateSource = useCallback(
     async (sourceText: string, nextReaderLabel = "Pasted text") => {
       if (!sourceText.trim()) {
@@ -1024,11 +1104,13 @@ export default function AnnotatorPage() {
 
       setAnnotating(true);
       setErrorMessage(null);
+      setProvenanceFailed(false);
       resetLookupState();
 
       try {
+        const segments = segmentText(sourceText);
         const results = await Promise.all(
-          segmentText(sourceText).map((segment) =>
+          segments.map((segment) =>
             segment.blank
               ? Promise.resolve([])
               : api.post<AnnotationItem[]>("/annotate", { text: segment.text }),
@@ -1039,13 +1121,84 @@ export default function AnnotatorPage() {
         setReaderLabel(nextReaderLabel);
         showToast("Annotation complete.", "success");
         setActivePanel(null);
+        lastSourceRef.current = { text: sourceText, label: nextReaderLabel };
+
+        void runProvenancePass(sourceText, abModel);
       } catch (error) {
         setErrorMessage(getErrorMessage(error));
       } finally {
         setAnnotating(false);
       }
     },
-    [resetLookupState, showToast],
+    [abModel, resetLookupState, runProvenancePass, showToast],
+  );
+
+  const curatePriority = useCallback(
+    async (phraseText: string, charIndex: number, suggested: string) => {
+      try {
+        const result = await api.post<{
+          ok: boolean;
+          via: string;
+          pinyin: string;
+          already?: boolean;
+        }>("/annotate/curate", {
+          phrase: phraseText,
+          char_index: charIndex,
+          suggested_pinyin: suggested,
+          model: abModel,
+        });
+        showToast(
+          result.already
+            ? "Already saved — nothing to do."
+            : `Saved as ${result.via}: ${formatPinyin(result.pinyin)}`,
+          "success",
+        );
+        // The dictionary changed on the backend; re-running the provenance
+        // pass is enough — it returns full annotations (readings + flags),
+        // so no full re-annotate is needed.
+        resetLookupState();
+        const source = lastSourceRef.current;
+        if (source) {
+          await runProvenancePass(source.text, abModel);
+        }
+      } catch (error) {
+        showToast(getErrorMessage(error), "error");
+      }
+    },
+    [abModel, resetLookupState, runProvenancePass, showToast],
+  );
+
+  const dismissSuggestion = useCallback(
+    async (
+      char: string,
+      dictPinyin: string,
+      suggested: string,
+      prevChar: string,
+      nextChar: string,
+    ) => {
+      try {
+        await api.post("/annotate/dismiss", {
+          char,
+          dict_pinyin: dictPinyin,
+          suggested_pinyin: suggested,
+          prev_char: prevChar,
+          next_char: nextChar,
+        });
+        showToast(
+          "Marked as wrong — won't flag it in this context again.",
+          "success",
+        );
+        resetLookupState();
+        // Readings didn't change; only the flags need recomputing.
+        const source = lastSourceRef.current;
+        if (source) {
+          await runProvenancePass(source.text, abModel);
+        }
+      } catch (error) {
+        showToast(getErrorMessage(error), "error");
+      }
+    },
+    [abModel, resetLookupState, runProvenancePass, showToast],
   );
 
   useEffect(() => {
@@ -1094,9 +1247,9 @@ export default function AnnotatorPage() {
     }
   }
 
-  async function inspectLookup(fragment: Fragment, phrase: PhraseContext | null) {
+  async function inspectLookup(fragment: Fragment, phrase: PhraseContext | null, phraseIndex: number | null = null) {
     setActivePanel(null);
-    setActiveLookup({ fragment, phrase });
+    setActiveLookup({ fragment, phrase, phraseIndex });
     setFragmentLookupEntries([]);
     setPhraseLookupEntries([]);
     setLoadingLookup(true);
@@ -1205,11 +1358,18 @@ export default function AnnotatorPage() {
     setSelectedFragments(nextSelection);
   }
 
-  function handleFragmentPress(fragment: Fragment, phrase: PhraseContext | null) {
+  function handleFragmentPress(fragment: Fragment, phrase: PhraseContext | null, phraseIndex: number | null = null) {
+    // Dev mode: a single tap always opens the lookup panel (for curation)
+    // instead of toggling pinyin visibility.
+    if (isDevMode()) {
+      void inspectLookup(fragment, phrase, phraseIndex);
+      return;
+    }
+
     // When the split-screen is open, use splitTapMode to decide behaviour.
     if (activeLookup !== null) {
       if (splitTapMode === 'lookup') {
-        void inspectLookup(fragment, phrase);
+        void inspectLookup(fragment, phrase, phraseIndex);
       } else {
         toggleFragments([fragment]);
       }
@@ -1221,7 +1381,7 @@ export default function AnnotatorPage() {
       return;
     }
 
-    void inspectLookup(fragment, phrase);
+    void inspectLookup(fragment, phrase, phraseIndex);
   }
 
   function handlePhrasePress(item: PhraseAnnotation) {
@@ -1321,7 +1481,12 @@ export default function AnnotatorPage() {
     {
       inPhrase = false,
       phrase = null,
-    }: { inPhrase?: boolean; phrase?: PhraseContext | null } = {},
+      phraseIndex,
+    }: {
+      inPhrase?: boolean;
+      phrase?: PhraseContext | null;
+      phraseIndex?: number;
+    } = {},
   ) {
     const selected = selectedKeys.has(fragmentKey(fragment));
     const lookupSelected =
@@ -1350,6 +1515,13 @@ export default function AnnotatorPage() {
     const hidePinyin = viewMode === "reader" && selected;
     const fragmentToneClass = viewMode === "reader" ? "text-slate-800" : "text-slate-900";
     const highlighted = lookupSelected || dragSelected;
+    const pinyinSource = fragment.source ?? "dict";
+    const devSourceClass =
+      devMode && pinyinSource !== "dict"
+        ? pinyinSource === "g2pm"
+          ? "underline decoration-emerald-500 decoration-2 underline-offset-[6px]"
+          : "underline decoration-amber-500 decoration-2 underline-offset-[6px]"
+        : "";
 
     return (
       <button
@@ -1359,8 +1531,9 @@ export default function AnnotatorPage() {
         data-lookup-selected={lookupSelected ? 'true' : 'false'}
         data-fragment-cchar={fragment.cchar}
         data-fragment-pinyin={fragment.pinyin}
-        onPointerDown={() => beginLongPress(fragment, phrase)}
-        onPointerUp={() => handleFragmentPointerUp(fragment, phrase)}
+        data-pinyin-source={pinyinSource}
+        onPointerDown={() => beginLongPress(fragment, phrase, phraseIndex ?? null)}
+        onPointerUp={() => handleFragmentPointerUp(fragment, phrase, phraseIndex ?? null)}
         onPointerMove={handleFragmentPointerMove}
         onPointerLeave={handleFragmentPointerLeave}
         onPointerCancel={handleFragmentPointerCancel}
@@ -1375,18 +1548,26 @@ export default function AnnotatorPage() {
             return;
           }
 
-          handleFragmentPress(fragment, phrase);
+          handleFragmentPress(fragment, phrase, phraseIndex ?? null);
         }}
         className={`flex min-w-[1.35em] flex-col items-center bg-transparent px-0 py-0 text-center transition ${fragmentToneClass} ${
           highlighted ? "rounded-md bg-sky-100/70 text-sky-900" : ""
         }`}
       >
+        {devMode && pinyinSource === "conflict" && fragment.suggested_pinyin ? (
+          <span
+            className={`text-[0.62rem] font-semibold leading-3 text-amber-600 ${hidePinyin ? "invisible" : ""}`}
+            title={`g2pM suggests ${formatPinyin(fragment.suggested_pinyin)} instead of ${formatPinyin(fragment.pinyin)} — tap for details`}
+          >
+            {formatPinyin(fragment.suggested_pinyin)}
+          </span>
+        ) : null}
         <span
           className={`min-h-4 text-[0.72rem] leading-4 ${hidePinyin ? "invisible" : "text-sky-700"}`}
         >
           {formatPinyin(fragment.pinyin)}
         </span>
-        <span className="reader-character text-[1.4rem] font-medium leading-7">
+        <span className={`reader-character text-[1.4rem] font-medium leading-7 ${devSourceClass}`}>
           {fragment.cchar}
         </span>
       </button>
@@ -1432,6 +1613,7 @@ export default function AnnotatorPage() {
             renderFragment(fragment, `phrase-${index}-${fragmentIndex}`, {
               inPhrase: true,
               phrase,
+              phraseIndex: fragmentIndex,
             }),
           )}
         </div>
@@ -1450,7 +1632,7 @@ export default function AnnotatorPage() {
           if (fragment) {
             // Phrase taps open the phrase-level context while defaulting the
             // fragment detail to the first selectable character.
-            handleFragmentPress(fragment, phrase);
+            handleFragmentPress(fragment, phrase, item.cchars.indexOf(fragment));
           }
         }}
         onKeyDown={(event) => {
@@ -1462,7 +1644,7 @@ export default function AnnotatorPage() {
             const fragment = selectableFragments[0];
 
             if (fragment) {
-              handleFragmentPress(fragment, phrase);
+              handleFragmentPress(fragment, phrase, item.cchars.indexOf(fragment));
             }
           }
         }}
@@ -1477,6 +1659,7 @@ export default function AnnotatorPage() {
           renderFragment(fragment, `phrase-${index}-${fragmentIndex}`, {
             inPhrase: true,
             phrase,
+            phraseIndex: fragmentIndex,
           }),
         )}
       </div>
@@ -1519,6 +1702,43 @@ export default function AnnotatorPage() {
           selectedCount={selectedFragments.length}
           readerLabel={readerLabel}
         />
+
+        {devMode && (
+          <div className="mb-1 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-2xl border border-dashed border-slate-300 bg-slate-50/80 px-4 py-2 text-xs text-slate-600">
+            <span className="font-semibold uppercase tracking-[0.18em] text-slate-500">
+              dev · pinyin source
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="text-slate-400">model:</span>
+              {(["g2pm", "g2pw"] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => switchAbModel(m)}
+                  className={`rounded-full px-2.5 py-0.5 font-semibold transition ${
+                    abModel === m
+                      ? "bg-slate-700 text-white"
+                      : "border border-slate-300 bg-white text-slate-500 hover:border-slate-400"
+                  }`}
+                >
+                  {m === "g2pw" ? "g2pW" : "g2pM"}
+                </button>
+              ))}
+            </span>
+            <span className="underline decoration-emerald-500 decoration-2 underline-offset-4">
+              {abModel === "g2pw" ? "g2pW" : "g2pM"} override
+            </span>
+            <span className="underline decoration-amber-500 decoration-2 underline-offset-4">
+              conflict · dictionary kept
+            </span>
+            <span className="text-slate-400">no underline = dictionary</span>
+            {provenanceFailed && (
+              <span className="font-semibold text-rose-500">
+                · {abModel === "g2pw" ? "g2pW" : "g2pM"} provenance unavailable
+              </span>
+            )}
+          </div>
+        )}
 
         {errorMessage && (
           <div
@@ -1899,6 +2119,61 @@ export default function AnnotatorPage() {
                   Hide
                 </button>
               </div>
+
+              {/* Dev-only g2pM curation: accept the suggestion or mark it wrong */}
+              {isDevMode() &&
+              activeLookup.fragment.source === "conflict" &&
+              activeLookup.fragment.suggested_pinyin ? (
+                <div className="shrink-0 border-b border-amber-200 bg-amber-50 px-4 py-3">
+                  <p className="text-sm text-amber-900">
+                    {abModel === "g2pw" ? "g2pW" : "g2pM"} suggests{" "}
+                    <span className="font-semibold">
+                      {formatPinyin(activeLookup.fragment.suggested_pinyin)}
+                    </span>{" "}
+                    instead of {formatPinyin(activeLookup.fragment.pinyin)}
+                  </p>
+                  <div className="mt-2 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void curatePriority(
+                          activeLookup.phrase?.text ??
+                            activeLookup.fragment.cchar,
+                          activeLookup.phraseIndex ?? 0,
+                          activeLookup.fragment.suggested_pinyin ?? "",
+                        )
+                      }
+                      className="rounded-full bg-emerald-600 px-4 py-1.5 text-sm font-semibold text-white transition active:bg-emerald-700"
+                    >
+                      ✓ Use this reading
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        // Dismissals are scoped to the character's immediate
+                        // neighbors within the phrase, so the same suggestion
+                        // can still flag in other words.
+                        const phraseText =
+                          activeLookup.phrase?.text ??
+                          activeLookup.fragment.cchar;
+                        const pIdx = activeLookup.phraseIndex ?? 0;
+                        void dismissSuggestion(
+                          activeLookup.fragment.cchar,
+                          activeLookup.fragment.pinyin,
+                          activeLookup.fragment.suggested_pinyin ?? "",
+                          pIdx > 0 ? phraseText[pIdx - 1] : "",
+                          pIdx < phraseText.length - 1
+                            ? phraseText[pIdx + 1]
+                            : "",
+                        );
+                      }}
+                      className="rounded-full bg-red-600 px-4 py-1.5 text-sm font-semibold text-white transition active:bg-red-700"
+                    >
+                      ✗ Mark as wrong
+                    </button>
+                  </div>
+                </div>
+              ) : null}
 
               {/* Scrollable definitions */}
               <div className="flex-1 space-y-5 overflow-y-auto px-5 py-4">
