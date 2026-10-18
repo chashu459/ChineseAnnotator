@@ -610,11 +610,14 @@ export default function AnnotatorPage() {
   const [viewMode, setViewMode] = useState<ViewMode>("reader");
   // Dev-only pinyin provenance highlights, enabled with ?dev=1 in the URL.
   // Underline marks characters whose reading came from the g2pM model or
-  // conflicted with the dictionary (see api/polyphone.py).
-  const [devMode] = useState<boolean>(() => {
-    if (typeof window === "undefined") return false;
-    return new URLSearchParams(window.location.search).get("dev") === "1";
-  });
+  // conflicted with the dictionary (see api/polyphone.py). Read in an
+  // effect, not the useState initializer, so the server render and the
+  // first client render agree -- reading window.location during SSR
+  // causes a hydration mismatch.
+  const [devMode, setDevMode] = useState<boolean>(false);
+  useEffect(() => {
+    setDevMode(new URLSearchParams(window.location.search).get("dev") === "1");
+  }, []);
   const [activeLookup, setActiveLookup] = useState<LookupTarget | null>(null);
   const [fragmentLookupEntries, setFragmentLookupEntries] = useState<DictionaryEntry[]>(
     [],
