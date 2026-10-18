@@ -6,7 +6,7 @@ click==8.5.0
 
 dj-database-url==3.1.2
 
-Django==5.2.18
+Django==6.1.2
 
 django-cors-headers==4.9.0
 
