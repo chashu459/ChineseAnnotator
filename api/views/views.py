@@ -28,6 +28,7 @@ from api.serializers import (AnnotationSerializer, BlacklistEntrySerializer,
                              PhraseEntrySerializer, ReloadEntrySerializer,
                              UpdateEntrySerializer,EditEntrySerializer)
 from api.Trie import (Trie, TradTrie)
+from api import polyphone
 from api.utils import (BLACKLIST, CUSTOM, DICT, PRIORITY, DEFAULT_OWNER, DEFAULT_PRIORITY, MAIN_PRIORITY, MAX_PRIORITY, NBSP, SESSIONS,
                        OwnerOrDefault, USER_PRIORITY, isChinese, parsePinyin,
                        reloadCEDict, openChapterText, listNovels)
@@ -284,9 +285,23 @@ class AnnotationView(APIView):
 
         print(fragments)
         
-        lst = list()
+        # g2pM polyphone (多音字) disambiguation: one contextual pinyin
+        # prediction per character of the original text. char_split=True
+        # guarantees the predictions align 1:1 with text. See api/polyphone.py.
+        poly_pinyins = polyphone.predict_char_pinyins(text)
+
+        # fragments concatenate back to text in order; record each
+        # fragment's start offset so single-character phrases can look up
+        # their g2pM prediction by absolute character index.
+        frag_start = 0
+        frag_starts = []
         for fragment in fragments:
-            
+            frag_starts.append(frag_start)
+            frag_start += len(fragment)
+
+        lst = list()
+        for frag_index, fragment in enumerate(fragments):
+            pos = frag_starts[frag_index]
             remaining = fragment
             # print(remaining)
             while remaining:
@@ -308,6 +323,7 @@ class AnnotationView(APIView):
 
                     # remove non chinese cahrs
                     remaining = remaining[firstCChar:]
+                    pos += firstCChar
                     # print("remainingAfterRemoval: '" + remaining + "'")
                 else:
                     # findBest is simply greedy algo, find the longest
@@ -320,6 +336,7 @@ class AnnotationView(APIView):
                         # print("phrase: '" + phrase + "'")
                     if not phrase:
                         remaining = remaining[1:]
+                        pos += 1
                         # Unknown, so put dummy entry.
                         phraselst = [ChineseEntry("zzz", "@")]
                         lst.append(PhraseEntry(phraselst))
@@ -336,7 +353,17 @@ class AnnotationView(APIView):
                         entries = EntryManager.get(phrase, trad=trad)
                         # print(entries)
                         if(entries):
-                            entry = entries[0]
+                            # g2pM disambiguation: for a single-character phrase
+                            # with multiple known readings, let the contextual
+                            # prediction re-rank the dictionary candidates.
+                            g2pm_pinyin = None
+                            if (poly_pinyins is not None and len(phrase) == 1
+                                    and isChinese(phrase) and pos < len(poly_pinyins)):
+                                g2pm_pinyin = poly_pinyins[pos]
+                            if g2pm_pinyin is None:
+                                entry = entries[0]
+                            else:
+                                entry = {"pinyin": polyphone.select_pinyin(phrase, entries, g2pm_pinyin)}
                             # print("entry: '" +  + "'")
                             # pprint(entry)
 
@@ -370,6 +397,7 @@ class AnnotationView(APIView):
                         else:
                             #Note: If this appears, it means Trie and EntryManagers are out of sync. Probablyj ust need to reloadCEDict
                             print(f"ERROR: Unable to find entry {phrase}")
+                        pos += len(phrase)
         return lst
 
     def post(self, request, format=None):

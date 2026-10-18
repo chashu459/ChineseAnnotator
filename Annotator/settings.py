@@ -44,6 +44,11 @@ def env_flag(name, default=False):
 DEBUG = env_flag('DEBUG', default=False)
 PERFORMANCE = env_flag('PERFORMANCE', default=False)
 
+# Polyphone (多音字) disambiguation via the lightweight g2pM model.
+# See api/polyphone.py. Set G2PM_ENABLED=0 to fall back to the pure
+# Trie + priority-list behavior.
+G2PM_ENABLED = env_flag('G2PM_ENABLED', default=True)
+
 # SECRET_KEY = '' # Change to empty string
 
 if DEBUG:

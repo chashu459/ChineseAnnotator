@@ -149,6 +149,7 @@ Annotator/
 - **Always** use `parsePinyin(pinyin)` from `api/utils.py` (backend) or the `parsePinyin` method in `HelperCard.js` (frontend) to convert ASCII pinyin (e.g., `san1`) to toned Unicode pinyin (e.g., `sān`). Do not duplicate this logic.
 - When performing dictionary lookups at annotation time, use the `Trie` class from `api/Trie.py` — do not do linear scans over `Entry.objects.all()`.
 - Pinyin in storage (database and serialized form) follows the CEDict ASCII format (e.g., `zhong1 guo2`). Convert to display form only at render time.
+- **Polyphone (多音字) disambiguation:** `api/polyphone.py` wraps the lightweight g2pM model (single-layer BiLSTM, ~1.7MB, numpy-only) to choose readings for single characters with multiple dictionary entries. `AnnotationView.annotate` runs it once per request (`char_split=True` gives one pinyin per input character, aligned 1:1) and uses its prediction only when it matches a known dictionary candidate for that character -- otherwise it falls back to the priority list. Disable the whole step with `G2PM_ENABLED=0`. Never invent readings outside the dictionary; g2pM only re-ranks existing candidates.
 
 ---
 
