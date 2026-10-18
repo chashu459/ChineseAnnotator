@@ -318,3 +318,111 @@ class PolyphoneG2PWTest(TestCase):
                 sys.modules["django.conf"] = old_conf
             else:
                 sys.modules.pop("django.conf", None)
+
+
+class PolyphoneLLMTest(TestCase):
+    """LLM adjudicator: reply parsing, caching, and graceful fallback.
+
+    _chat is stubbed so no Ollama server is needed.
+    """
+
+    def setUp(self):
+        from api import llm_adjudicator
+        llm_adjudicator.clear_cache()
+        self._replies = []
+        self._calls = 0
+
+        def fake_chat(prompt):
+            self._calls += 1
+            reply = self._replies.pop(0) if self._replies else ""
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
+
+        import unittest.mock as mock
+        self._patcher = mock.patch.object(llm_adjudicator, "_chat", fake_chat)
+        self._patcher.start()
+
+    def tearDown(self):
+        from api import llm_adjudicator
+        self._patcher.stop()
+        llm_adjudicator.clear_cache()
+
+    def _adjudicate(self, reply, **kwargs):
+        from api import llm_adjudicator
+        self._replies.append(reply)
+        params = dict(char="行", candidates=["hang2", "xing2"],
+                      sentence="他一个人走在银行前面。", phrase="银行",
+                      char_index=1)
+        params.update(kwargs)
+        return llm_adjudicator.adjudicate(**params)
+
+    def test_toned_reply_maps_to_candidate(self):
+        self.assertEqual(self._adjudicate("háng"), "hang2")
+
+    def test_ascii_reply_maps_to_candidate(self):
+        self.assertEqual(self._adjudicate("xing2"), "xing2")
+
+    def test_garbage_reply_returns_none(self):
+        self.assertIsNone(self._adjudicate("我不知道"))
+
+    def test_empty_reply_returns_none(self):
+        self.assertIsNone(self._adjudicate(""))
+
+    def test_chat_failure_returns_none_and_never_raises(self):
+        self.assertIsNone(
+            self._adjudicate(ConnectionError("server down")))
+
+    def test_result_is_cached(self):
+        from api import llm_adjudicator
+        self._replies.append("háng")
+        first = llm_adjudicator.adjudicate(
+            "行", ["hang2", "xing2"], "他一个人走在银行前面。")
+        second = llm_adjudicator.adjudicate(
+            "行", ["hang2", "xing2"], "他一个人走在银行前面。")
+        self.assertEqual(first, "hang2")
+        self.assertEqual(second, "hang2")
+        self.assertEqual(self._calls, 1)
+
+    def test_different_context_triggers_new_call(self):
+        from api import llm_adjudicator
+        self._replies.extend(["háng", "xíng"])
+        llm_adjudicator.adjudicate("行", ["hang2", "xing2"], "句子一。")
+        llm_adjudicator.adjudicate("行", ["hang2", "xing2"], "句子二。")
+        self.assertEqual(self._calls, 2)
+
+    def test_match_candidate_prefers_exact_over_verbatim(self):
+        from api import llm_adjudicator
+        # Reply names the wrong reading in prose but answers hang2.
+        self.assertEqual(
+            llm_adjudicator._match_candidate(
+                "不是 xíng，而是 háng", ["hang2", "xing2"]),
+            "hang2")
+
+    def test_model_available_reflects_ping(self):
+        import unittest.mock as mock
+        import api.polyphone as polyphone
+        from api import llm_adjudicator
+        with mock.patch.object(llm_adjudicator, "_ping", return_value=True):
+            llm_adjudicator.clear_cache()
+            self.assertTrue(polyphone.model_available("llm"))
+        with mock.patch.object(llm_adjudicator, "_ping", return_value=False):
+            llm_adjudicator.clear_cache()
+            self.assertFalse(polyphone.model_available("llm"))
+
+    def test_predict_with_confidence_returns_none_for_llm(self):
+        import api.polyphone as polyphone
+        pinyins, confidences = polyphone.predict_with_confidence(
+            "银行", model="llm")
+        self.assertIsNone(pinyins)
+        self.assertEqual(confidences, {})
+
+    def test_model_label(self):
+        import api.polyphone as polyphone
+        self.assertEqual(polyphone.model_label("llm"), "LLM")
+        self.assertEqual(polyphone.model_label("g2pm"), "g2pM")
+        self.assertEqual(polyphone.model_label("g2pw"), "g2pW")
+
+    def test_llm_in_g2p_models(self):
+        import api.polyphone as polyphone
+        self.assertIn("llm", polyphone.G2P_MODELS)

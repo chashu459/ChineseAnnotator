@@ -174,7 +174,14 @@ def is_enabled():
 # environment variable, or per-request by the dev-only provenance endpoint.
 G2P_MODEL_G2PM = "g2pm"
 G2P_MODEL_G2PW = "g2pw"
-G2P_MODELS = (G2P_MODEL_G2PM, G2P_MODEL_G2PW)
+G2P_MODEL_LLM = "llm"
+G2P_MODELS = (G2P_MODEL_G2PM, G2P_MODEL_G2PW, G2P_MODEL_LLM)
+
+MODEL_LABELS = {
+    G2P_MODEL_G2PM: "g2pM",
+    G2P_MODEL_G2PW: "g2pW",
+    G2P_MODEL_LLM: "LLM",
+}
 
 
 def active_model():
@@ -185,6 +192,17 @@ def active_model():
     except Exception:
         name = G2P_MODEL_G2PM
     return name if name in G2P_MODELS else G2P_MODEL_G2PM
+
+
+def model_label(model=None):
+    """Display label for a model name ("g2pM", "g2pW", "LLM")."""
+    return MODEL_LABELS.get(model or active_model(),
+                            MODEL_LABELS[G2P_MODEL_G2PM])
+
+
+def distinct_readings(entries):
+    """Distinct known readings across entries, in priority order."""
+    return _distinct_readings(entries) if entries else []
 
 
 def model_available(model=None):
@@ -198,6 +216,9 @@ def model_available(model=None):
     if not is_enabled():
         return False
     name = model or active_model()
+    if name == G2P_MODEL_LLM:
+        from api import llm_adjudicator
+        return llm_adjudicator.available()
     if name == G2P_MODEL_G2PW:
         return get_g2pw_converter() is not None
     return get_model() is not None
@@ -386,7 +407,11 @@ def predict_with_confidence(text, model=None):
 
     Args:
         text: the raw input string passed to AnnotationView.annotate.
-        model: "g2pm" or "g2pw"; defaults to active_model().
+        model: "g2pm", "g2pw" or "llm"; defaults to active_model().
+            "llm" has no whole-text prediction -- it adjudicates each
+            polyphonic character at resolve time (see
+            api/llm_adjudicator.py), so this returns (None, {}) for it
+            and the caller branches before calling.
 
     Returns:
         (pinyins, confidences): pinyins is a list with one ASCII pinyin
@@ -399,6 +424,8 @@ def predict_with_confidence(text, model=None):
     if not text or not is_enabled():
         return None, {}
     name = model or active_model()
+    if name == G2P_MODEL_LLM:
+        return None, {}
     if name == G2P_MODEL_G2PW:
         return _predict_g2pw(text)
     model_obj = get_model()
