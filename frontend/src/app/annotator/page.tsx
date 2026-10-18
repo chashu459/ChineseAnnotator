@@ -1515,7 +1515,7 @@ export default function AnnotatorPage() {
             className={`flex items-center gap-1 text-[0.62rem] font-semibold leading-3 text-amber-600 ${hidePinyin ? "invisible" : ""}`}
             title={`g2pM suggests ${formatPinyin(fragment.suggested_pinyin)} instead of ${formatPinyin(fragment.pinyin)}`}
           >
-            <span>g2pM: {formatPinyin(fragment.suggested_pinyin)}</span>
+            <span>{formatPinyin(fragment.suggested_pinyin)}</span>
             <span
               role="button"
               aria-label="Use this reading"

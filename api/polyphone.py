@@ -162,7 +162,7 @@ def model_available():
     """
     if not is_enabled():
         return False
-    return _get_model() is not None
+    return get_model() is not None
 
 
 def advisory_mode():
