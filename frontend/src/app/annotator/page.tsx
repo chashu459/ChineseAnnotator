@@ -57,6 +57,7 @@ type PhraseContext = {
 type LookupTarget = {
   fragment: Fragment;
   phrase: PhraseContext | null;
+  phraseIndex: number | null;
 };
 
 function segmentText(text: string) {
@@ -653,7 +654,7 @@ export default function AnnotatorPage() {
   const longPressTimeoutRef = useRef<number | null>(null);
   const longPressTriggeredRef = useRef(false);
   const dragSelectActiveRef = useRef(false);
-  const longPressOriginRef = useRef<{ fragment: Fragment; phrase: PhraseContext | null } | null>(null);
+  const longPressOriginRef = useRef<{ fragment: Fragment; phrase: PhraseContext | null; phraseIndex: number | null } | null>(null);
   const [dragSelectFragments, setDragSelectFragments] = useState<Fragment[]>([]);
   const [addPhraseModalOpen, setAddPhraseModalOpen] = useState(false);
   const [addPhrasePinyin, setAddPhrasePinyin] = useState("");
@@ -882,11 +883,11 @@ export default function AnnotatorPage() {
     setIsDividerDragging(false);
   }
 
-  function beginLongPress(fragment: Fragment, phrase: PhraseContext | null) {
+  function beginLongPress(fragment: Fragment, phrase: PhraseContext | null, phraseIndex: number | null = null) {
     clearLongPressTimeout();
     longPressTriggeredRef.current = false;
     dragSelectActiveRef.current = false;
-    longPressOriginRef.current = { fragment, phrase };
+    longPressOriginRef.current = { fragment, phrase, phraseIndex };
 
     longPressTimeoutRef.current = window.setTimeout(() => {
       longPressTriggeredRef.current = true;
@@ -926,7 +927,7 @@ export default function AnnotatorPage() {
     });
   }
 
-  function handleFragmentPointerUp(fragment: Fragment, phrase: PhraseContext | null) {
+  function handleFragmentPointerUp(fragment: Fragment, phrase: PhraseContext | null, phraseIndex: number | null = null) {
     clearLongPressTimeout();
 
     if (!dragSelectActiveRef.current) {
@@ -958,7 +959,7 @@ export default function AnnotatorPage() {
         }, 0);
       } else {
         // Single fragment — fall through to normal long-press lookup.
-        setTimeout(() => void inspectLookup(fragment, phrase), 0);
+        setTimeout(() => void inspectLookup(fragment, phrase, phraseIndex), 0);
       }
 
       return fragments;
@@ -1152,6 +1153,7 @@ export default function AnnotatorPage() {
           suggested_pinyin: suggested,
         });
         showToast("Marked as wrong — won't flag this again.", "success");
+        resetLookupState();
         // Readings didn't change; only the flags need recomputing.
         const source = lastSourceRef.current;
         if (source) {
@@ -1161,7 +1163,7 @@ export default function AnnotatorPage() {
         showToast(getErrorMessage(error), "error");
       }
     },
-    [runProvenancePass, showToast],
+    [resetLookupState, runProvenancePass, showToast],
   );
 
   useEffect(() => {
@@ -1210,9 +1212,9 @@ export default function AnnotatorPage() {
     }
   }
 
-  async function inspectLookup(fragment: Fragment, phrase: PhraseContext | null) {
+  async function inspectLookup(fragment: Fragment, phrase: PhraseContext | null, phraseIndex: number | null = null) {
     setActivePanel(null);
-    setActiveLookup({ fragment, phrase });
+    setActiveLookup({ fragment, phrase, phraseIndex });
     setFragmentLookupEntries([]);
     setPhraseLookupEntries([]);
     setLoadingLookup(true);
@@ -1321,11 +1323,11 @@ export default function AnnotatorPage() {
     setSelectedFragments(nextSelection);
   }
 
-  function handleFragmentPress(fragment: Fragment, phrase: PhraseContext | null) {
+  function handleFragmentPress(fragment: Fragment, phrase: PhraseContext | null, phraseIndex: number | null = null) {
     // When the split-screen is open, use splitTapMode to decide behaviour.
     if (activeLookup !== null) {
       if (splitTapMode === 'lookup') {
-        void inspectLookup(fragment, phrase);
+        void inspectLookup(fragment, phrase, phraseIndex);
       } else {
         toggleFragments([fragment]);
       }
@@ -1337,7 +1339,7 @@ export default function AnnotatorPage() {
       return;
     }
 
-    void inspectLookup(fragment, phrase);
+    void inspectLookup(fragment, phrase, phraseIndex);
   }
 
   function handlePhrasePress(item: PhraseAnnotation) {
@@ -1488,8 +1490,8 @@ export default function AnnotatorPage() {
         data-fragment-cchar={fragment.cchar}
         data-fragment-pinyin={fragment.pinyin}
         data-pinyin-source={pinyinSource}
-        onPointerDown={() => beginLongPress(fragment, phrase)}
-        onPointerUp={() => handleFragmentPointerUp(fragment, phrase)}
+        onPointerDown={() => beginLongPress(fragment, phrase, phraseIndex ?? null)}
+        onPointerUp={() => handleFragmentPointerUp(fragment, phrase, phraseIndex ?? null)}
         onPointerMove={handleFragmentPointerMove}
         onPointerLeave={handleFragmentPointerLeave}
         onPointerCancel={handleFragmentPointerCancel}
@@ -1504,7 +1506,7 @@ export default function AnnotatorPage() {
             return;
           }
 
-          handleFragmentPress(fragment, phrase);
+          handleFragmentPress(fragment, phrase, phraseIndex ?? null);
         }}
         className={`flex min-w-[1.35em] flex-col items-center bg-transparent px-0 py-0 text-center transition ${fragmentToneClass} ${
           highlighted ? "rounded-md bg-sky-100/70 text-sky-900" : ""
@@ -1512,46 +1514,10 @@ export default function AnnotatorPage() {
       >
         {devMode && pinyinSource === "conflict" && fragment.suggested_pinyin ? (
           <span
-            className={`flex items-center gap-1 text-[0.62rem] font-semibold leading-3 text-amber-600 ${hidePinyin ? "invisible" : ""}`}
-            title={`g2pM suggests ${formatPinyin(fragment.suggested_pinyin)} instead of ${formatPinyin(fragment.pinyin)}`}
+            className={`text-[0.62rem] font-semibold leading-3 text-amber-600 ${hidePinyin ? "invisible" : ""}`}
+            title={`g2pM suggests ${formatPinyin(fragment.suggested_pinyin)} instead of ${formatPinyin(fragment.pinyin)} — tap for details`}
           >
-            <span>{formatPinyin(fragment.suggested_pinyin)}</span>
-            <span
-              role="button"
-              aria-label="Use this reading"
-              title="Make this reading the priority"
-              onPointerDown={(event) => event.stopPropagation()}
-              onPointerUp={(event) => event.stopPropagation()}
-              onClick={(event) => {
-                event.stopPropagation();
-                void curatePriority(
-                  phrase?.text ?? fragment.cchar,
-                  phraseIndex ?? 0,
-                  fragment.suggested_pinyin ?? "",
-                );
-              }}
-              className="rounded bg-emerald-100 px-1 py-px text-emerald-700 active:bg-emerald-200"
-            >
-              ✓
-            </span>
-            <span
-              role="button"
-              aria-label="Mark suggestion as wrong"
-              title="Mark this suggestion as wrong"
-              onPointerDown={(event) => event.stopPropagation()}
-              onPointerUp={(event) => event.stopPropagation()}
-              onClick={(event) => {
-                event.stopPropagation();
-                void dismissSuggestion(
-                  fragment.cchar,
-                  fragment.pinyin,
-                  fragment.suggested_pinyin ?? "",
-                );
-              }}
-              className="rounded bg-red-100 px-1 py-px text-red-600 active:bg-red-200"
-            >
-              ✗
-            </span>
+            g2pM: {formatPinyin(fragment.suggested_pinyin)}
           </span>
         ) : null}
         <span
@@ -1624,7 +1590,7 @@ export default function AnnotatorPage() {
           if (fragment) {
             // Phrase taps open the phrase-level context while defaulting the
             // fragment detail to the first selectable character.
-            handleFragmentPress(fragment, phrase);
+            handleFragmentPress(fragment, phrase, item.cchars.indexOf(fragment));
           }
         }}
         onKeyDown={(event) => {
@@ -1636,7 +1602,7 @@ export default function AnnotatorPage() {
             const fragment = selectableFragments[0];
 
             if (fragment) {
-              handleFragmentPress(fragment, phrase);
+              handleFragmentPress(fragment, phrase, item.cchars.indexOf(fragment));
             }
           }
         }}
@@ -2094,6 +2060,50 @@ export default function AnnotatorPage() {
                   Hide
                 </button>
               </div>
+
+              {/* Dev-only g2pM curation: accept the suggestion or mark it wrong */}
+              {isDevMode() &&
+              activeLookup.fragment.source === "conflict" &&
+              activeLookup.fragment.suggested_pinyin ? (
+                <div className="shrink-0 border-b border-amber-200 bg-amber-50 px-4 py-3">
+                  <p className="text-sm text-amber-900">
+                    g2pM suggests{" "}
+                    <span className="font-semibold">
+                      {formatPinyin(activeLookup.fragment.suggested_pinyin)}
+                    </span>{" "}
+                    instead of {formatPinyin(activeLookup.fragment.pinyin)}
+                  </p>
+                  <div className="mt-2 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void curatePriority(
+                          activeLookup.phrase?.text ??
+                            activeLookup.fragment.cchar,
+                          activeLookup.phraseIndex ?? 0,
+                          activeLookup.fragment.suggested_pinyin ?? "",
+                        )
+                      }
+                      className="rounded-full bg-emerald-600 px-4 py-1.5 text-sm font-semibold text-white transition active:bg-emerald-700"
+                    >
+                      ✓ Use this reading
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void dismissSuggestion(
+                          activeLookup.fragment.cchar,
+                          activeLookup.fragment.pinyin,
+                          activeLookup.fragment.suggested_pinyin ?? "",
+                        )
+                      }
+                      className="rounded-full bg-red-600 px-4 py-1.5 text-sm font-semibold text-white transition active:bg-red-700"
+                    >
+                      ✗ Mark as wrong
+                    </button>
+                  </div>
+                </div>
+              ) : null}
 
               {/* Scrollable definitions */}
               <div className="flex-1 space-y-5 overflow-y-auto px-5 py-4">
