@@ -41,13 +41,14 @@ async function request<T>(path: string, init: RequestInit = {}) {
 }
 
 export const api = {
-  get<T>(path: string) {
-    return request<T>(path);
+  get<T>(path: string, init: RequestInit = {}) {
+    return request<T>(path, init);
   },
-  post<T>(path: string, body: unknown) {
+  post<T>(path: string, body: unknown, init: RequestInit = {}) {
     return request<T>(path, {
       method: "POST",
       body: JSON.stringify(body),
+      ...init,
     });
   },
 };
