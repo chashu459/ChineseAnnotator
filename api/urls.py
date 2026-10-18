@@ -16,6 +16,7 @@ urlpatterns = [
     # path('count', CountEntryView.as_view()),
     path('entry/edit', EditEntryView.as_view()),
     path('entry/edit/clean', CleanEditEntryView.as_view()),
+    path('entry/custom', AddCustomPhraseView.as_view()),
     path('annotate', AnnotationView.as_view()),
     path('annotate/provenance', ProvenanceView.as_view()),
     path('annotate/curate', CuratePriorityView.as_view()),

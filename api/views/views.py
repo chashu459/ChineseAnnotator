@@ -557,8 +557,8 @@ class CuratePriorityView(APIView):
     top-priority entry, swaps the reading at char_index for the suggestion,
     and persists it so the suggestion becomes the displayed reading:
     - if a dictionary entry with the corrected pinyin already exists, a
-      priority.json entry boosts that entry (carrying its own definition,
-      not the top entry's) to USER_PRIORITY;
+      priority.json entry boosts that entry (carrying its own traditional
+      form and definition, not the top entry's) to USER_PRIORITY;
     - otherwise a custom.json entry adds the new reading (CUSTOM_PRIORITY),
       with the english copied from the top entry as a fallback.
     The datamap is rebuilt and EntryManager reloaded, so the change is live
@@ -605,26 +605,40 @@ class CuratePriorityView(APIView):
                      None)
         if match is not None:
             # The reading already exists in the dictionary: boost the entry
-            # that actually carries it -- with its own definition -- rather
-            # than the top entry's.
+            # that actually carries it -- with its own traditional form and
+            # definition -- rather than the top entry's.
             path = _data_path("priority.json")
             rows = _read_json_list(path)
-            done = any(r.get("simplified") == match["simplified"]
-                       and r.get("pinyin") == corrected for r in rows)
-            if not done:
-                rows.append({
-                    "traditional": match["traditional"],
-                    "simplified": match["simplified"],
-                    "pinyin": corrected,
-                    "english": match.get("english", ""),
-                    "reason": f"{model_label} curation",
-                })
+            want = {
+                "traditional": match["traditional"],
+                "simplified": match["simplified"],
+                "pinyin": corrected,
+                "english": match.get("english", ""),
+            }
+            row = next((r for r in rows
+                        if r.get("simplified") == want["simplified"]
+                        and r.get("pinyin") == want["pinyin"]), None)
+            if row is None:
+                row = dict(want, reason=f"{model_label} curation")
+                rows.append(row)
+                changed = True
+            else:
+                # A row for this reading already exists: refresh any stale
+                # fields (rows written before the definition/traditional fix
+                # carry the top entry's values). A hand-written reason is
+                # left alone.
+                changed = False
+                for key, value in want.items():
+                    if row.get(key) != value:
+                        row[key] = value
+                        changed = True
+            if changed:
                 with open(path, "w") as f:
                     json.dump(rows, f, ensure_ascii=False, indent=2)
                 setupPriorityEntries()
                 EntryManager.reloadPriorities()
             return Response({"ok": True, "via": "priority",
-                             "pinyin": corrected, "already": done},
+                             "pinyin": corrected, "already": not changed},
                             status=status.HTTP_200_OK)
 
         # New reading; add it via custom.json.
@@ -645,6 +659,69 @@ class CuratePriorityView(APIView):
             EntryManager.reloadCustoms()
         return Response({"ok": True, "via": "custom",
                          "pinyin": corrected, "already": done},
+                        status=status.HTTP_200_OK)
+
+
+class AddCustomPhraseView(APIView):
+    """Add a custom phrase: writes to data/custom.json (live in annotation)
+    and logs an EditEntry record (type='custom') for review, as the "Add
+    custom phrase" modal previously did via /entry/edit alone.
+
+    POST {simplified, traditional?, pinyin, english?, notes?}: appends a
+    custom.json row (deduped on simplified+pinyin), rebuilds the custom
+    datamap and reloads it so the phrase annotates immediately. Pinyin is
+    space-separated ASCII readings, e.g. "ni3 hao3".
+    """
+
+    def post(self, request, format=None):
+        data = request.data if isinstance(request.data, dict) else {}
+        simplified = (data.get("simplified") or "").strip()
+        traditional = (data.get("traditional") or "").strip() or simplified
+        pinyin = " ".join(
+            polyphone.unparse_pinyin(p)
+            for p in (data.get("pinyin") or "").strip().split()
+        )
+        english = (data.get("english") or "").strip()
+        notes = (data.get("notes") or "").strip()
+
+        if not simplified:
+            return Response({"detail": "simplified is required"},
+                            status=status.HTTP_400_BAD_REQUEST)
+        parts = [p for p in pinyin.split(" ") if p]
+        if not parts or not all(polyphone.looks_like_pinyin(p) for p in parts):
+            return Response({"detail": "pinyin is not valid"},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        # 1. custom.json -- this is what makes the phrase live in annotation.
+        path = _data_path("custom.json")
+        rows = _read_json_list(path)
+        done = any(r.get("simplified") == simplified
+                   and r.get("pinyin") == pinyin for r in rows)
+        if not done:
+            rows.append({
+                "traditional": traditional,
+                "simplified": simplified,
+                "pinyin": pinyin,
+                "english": english,
+            })
+            with open(path, "w") as f:
+                json.dump(rows, f, ensure_ascii=False, indent=2)
+            setupCustomEntries()
+            EntryManager.reloadCustoms()
+
+        # 2. EditEntry log, as the modal previously did via /entry/edit.
+        serializer = EditEntrySerializer(data={
+            "type": "custom",
+            "simplified": simplified,
+            "traditional": traditional,
+            "pinyin": pinyin,
+            "english": english,
+            **({"notes": notes} if notes else {}),
+        })
+        if serializer.is_valid():
+            serializer.save()
+
+        return Response({"ok": True, "already": done},
                         status=status.HTTP_200_OK)
 
 

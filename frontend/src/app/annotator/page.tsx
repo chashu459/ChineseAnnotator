@@ -992,8 +992,8 @@ export default function AnnotatorPage() {
   ) {
     setAddPhraseSubmitting(true);
     try {
-      await api.post('/entry/edit', { type: 'custom', simplified, traditional: simplified, pinyin, english, ...(notes.trim() ? { notes } : {}) });
-      showToast('Phrase entry submitted.', 'success');
+      await api.post('/entry/custom', { simplified, traditional: simplified, pinyin, english, ...(notes.trim() ? { notes } : {}) });
+      showToast('Custom phrase added.', 'success');
       setAddPhraseModalOpen(false);
       clearDragSelect();
     } catch (error) {
