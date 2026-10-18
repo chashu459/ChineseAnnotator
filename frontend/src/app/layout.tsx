@@ -16,10 +16,10 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  // suppressHydrationWarning: mobile browsers/webviews (e.g. Chrome iOS
+  // internals) may inject attributes like __gcrremoteframetoken into <html>
+  // before hydration; the server can never match those.
   return (
-    {/* suppressHydrationWarning: mobile browsers/webviews (e.g. Chrome iOS
-        internals) may inject attributes like __gcrremoteframetoken into <html>
-        before hydration; the server can never match those. */}
     <html lang="en" className="h-full antialiased" suppressHydrationWarning>
       <body className="min-h-full bg-slate-100 text-slate-950">
         {children}
