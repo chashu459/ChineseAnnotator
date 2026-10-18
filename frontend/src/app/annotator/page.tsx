@@ -646,6 +646,9 @@ export default function AnnotatorPage() {
   // Guards the dev-only background provenance pass against stale responses
   // when the user loads another text before it finishes.
   const provenanceRequestRef = useRef<number>(0);
+  // Last successfully annotated source, so dev-mode curation actions
+  // (priority / dismiss) can refresh the reader without new input.
+  const lastSourceRef = useRef<{ text: string; label: string } | null>(null);
   const toastTimeoutRef = useRef<number | null>(null);
   const longPressTimeoutRef = useRef<number | null>(null);
   const longPressTriggeredRef = useRef(false);
@@ -1034,6 +1037,37 @@ export default function AnnotatorPage() {
       ? chapterList[chapterIndex + 1]
       : null;
 
+  // Dev-only (?dev=1): run the g2pM provenance pass in the background
+  // and swap the highlights in when it finishes. Adds provenance flags on
+  // top of the fast pass; a stale response must never overwrite a newer
+  // annotation. isDevMode() is read live so this never depends on a stale
+  // closure.
+  const runProvenancePass = useCallback(async (sourceText: string) => {
+    if (!isDevMode()) {
+      return;
+    }
+    const requestId = ++provenanceRequestRef.current;
+    try {
+      const segments = segmentText(sourceText);
+      const provenanceResults = await Promise.all(
+        segments.map((segment) =>
+          segment.blank
+            ? Promise.resolve([])
+            : api.post<AnnotationItem[]>("/annotate/provenance", {
+                text: segment.text,
+              }),
+        ),
+      );
+      if (provenanceRequestRef.current === requestId) {
+        setAnnotations(provenanceResults);
+      }
+    } catch {
+      // Surface the failure in the dev legend: a silent all-dict
+      // result is indistinguishable from "no conflicts" otherwise.
+      setProvenanceFailed(true);
+    }
+  }, []);
+
   const annotateSource = useCallback(
     async (sourceText: string, nextReaderLabel = "Pasted text") => {
       if (!sourceText.trim()) {
@@ -1063,41 +1097,71 @@ export default function AnnotatorPage() {
         setReaderLabel(nextReaderLabel);
         showToast("Annotation complete.", "success");
         setActivePanel(null);
+        lastSourceRef.current = { text: sourceText, label: nextReaderLabel };
 
-        // Dev-only (?dev=1): run the g2pM provenance pass in the background
-        // and swap the highlights in when it finishes. The fast pass above
-        // already shows the readings; this only adds provenance flags, so a
-        // stale response must never overwrite a newer annotation.
-        // isDevMode() is read live so this never depends on a stale closure.
-        if (isDevMode()) {
-          const requestId = ++provenanceRequestRef.current;
-          void Promise.all(
-            segments.map((segment) =>
-              segment.blank
-                ? Promise.resolve([])
-                : api.post<AnnotationItem[]>("/annotate/provenance", {
-                    text: segment.text,
-                  }),
-            ),
-          )
-            .then((provenanceResults) => {
-              if (provenanceRequestRef.current === requestId) {
-                setAnnotations(provenanceResults);
-              }
-            })
-            .catch(() => {
-              // Surface the failure in the dev legend: a silent all-dict
-              // result is indistinguishable from "no conflicts" otherwise.
-              setProvenanceFailed(true);
-            });
-        }
+        void runProvenancePass(sourceText);
       } catch (error) {
         setErrorMessage(getErrorMessage(error));
       } finally {
         setAnnotating(false);
       }
     },
-    [resetLookupState, showToast],
+    [resetLookupState, runProvenancePass, showToast],
+  );
+
+  const refreshAnnotations = useCallback(() => {
+    const source = lastSourceRef.current;
+    if (source) {
+      void annotateSource(source.text, source.label);
+    }
+  }, [annotateSource]);
+
+  const curatePriority = useCallback(
+    async (phraseText: string, charIndex: number, suggested: string) => {
+      try {
+        const result = await api.post<{
+          ok: boolean;
+          via: string;
+          pinyin: string;
+          already?: boolean;
+        }>("/annotate/curate", {
+          phrase: phraseText,
+          char_index: charIndex,
+          suggested_pinyin: suggested,
+        });
+        showToast(
+          result.already
+            ? "Already saved — nothing to do."
+            : `Saved as ${result.via}: ${formatPinyin(result.pinyin)}`,
+          "success",
+        );
+        refreshAnnotations();
+      } catch (error) {
+        showToast(getErrorMessage(error), "error");
+      }
+    },
+    [refreshAnnotations, showToast],
+  );
+
+  const dismissSuggestion = useCallback(
+    async (char: string, dictPinyin: string, suggested: string) => {
+      try {
+        await api.post("/annotate/dismiss", {
+          char,
+          dict_pinyin: dictPinyin,
+          suggested_pinyin: suggested,
+        });
+        showToast("Marked as wrong — won't flag this again.", "success");
+        // Readings didn't change; only the flags need recomputing.
+        const source = lastSourceRef.current;
+        if (source) {
+          await runProvenancePass(source.text);
+        }
+      } catch (error) {
+        showToast(getErrorMessage(error), "error");
+      }
+    },
+    [runProvenancePass, showToast],
   );
 
   useEffect(() => {
@@ -1373,7 +1437,12 @@ export default function AnnotatorPage() {
     {
       inPhrase = false,
       phrase = null,
-    }: { inPhrase?: boolean; phrase?: PhraseContext | null } = {},
+      phraseIndex,
+    }: {
+      inPhrase?: boolean;
+      phrase?: PhraseContext | null;
+      phraseIndex?: number;
+    } = {},
   ) {
     const selected = selectedKeys.has(fragmentKey(fragment));
     const lookupSelected =
@@ -1441,19 +1510,55 @@ export default function AnnotatorPage() {
           highlighted ? "rounded-md bg-sky-100/70 text-sky-900" : ""
         }`}
       >
+        {devMode && pinyinSource === "conflict" && fragment.suggested_pinyin ? (
+          <span
+            className={`flex items-center gap-1 text-[0.62rem] font-semibold leading-3 text-amber-600 ${hidePinyin ? "invisible" : ""}`}
+            title={`g2pM suggests ${formatPinyin(fragment.suggested_pinyin)} instead of ${formatPinyin(fragment.pinyin)}`}
+          >
+            <span>g2pM: {formatPinyin(fragment.suggested_pinyin)}</span>
+            <span
+              role="button"
+              aria-label="Use this reading"
+              title="Make this reading the priority"
+              onPointerDown={(event) => event.stopPropagation()}
+              onPointerUp={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation();
+                void curatePriority(
+                  phrase?.text ?? fragment.cchar,
+                  phraseIndex ?? 0,
+                  fragment.suggested_pinyin ?? "",
+                );
+              }}
+              className="rounded bg-emerald-100 px-1 py-px text-emerald-700 active:bg-emerald-200"
+            >
+              ✓
+            </span>
+            <span
+              role="button"
+              aria-label="Mark suggestion as wrong"
+              title="Mark this suggestion as wrong"
+              onPointerDown={(event) => event.stopPropagation()}
+              onPointerUp={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation();
+                void dismissSuggestion(
+                  fragment.cchar,
+                  fragment.pinyin,
+                  fragment.suggested_pinyin ?? "",
+                );
+              }}
+              className="rounded bg-red-100 px-1 py-px text-red-600 active:bg-red-200"
+            >
+              ✗
+            </span>
+          </span>
+        ) : null}
         <span
           className={`min-h-4 text-[0.72rem] leading-4 ${hidePinyin ? "invisible" : "text-sky-700"}`}
         >
           {formatPinyin(fragment.pinyin)}
         </span>
-        {devMode && pinyinSource === "conflict" && fragment.suggested_pinyin ? (
-          <span
-            className={`text-[0.62rem] font-semibold leading-3 text-amber-600 ${hidePinyin ? "invisible" : ""}`}
-            title={`g2pM suggests ${formatPinyin(fragment.suggested_pinyin)} instead of ${formatPinyin(fragment.pinyin)}`}
-          >
-            g2pM: {formatPinyin(fragment.suggested_pinyin)}
-          </span>
-        ) : null}
         <span className={`reader-character text-[1.4rem] font-medium leading-7 ${devSourceClass}`}>
           {fragment.cchar}
         </span>
@@ -1500,6 +1605,7 @@ export default function AnnotatorPage() {
             renderFragment(fragment, `phrase-${index}-${fragmentIndex}`, {
               inPhrase: true,
               phrase,
+              phraseIndex: fragmentIndex,
             }),
           )}
         </div>
@@ -1545,6 +1651,7 @@ export default function AnnotatorPage() {
           renderFragment(fragment, `phrase-${index}-${fragmentIndex}`, {
             inPhrase: true,
             phrase,
+            phraseIndex: fragmentIndex,
           }),
         )}
       </div>

@@ -43,6 +43,100 @@ SOURCE_CONFLICT = "conflict"  # g2pM disagreed but its reading isn't a known
 _model = None
 _model_failed = False
 
+# --- toned -> ASCII pinyin -------------------------------------------------
+# The API exposes toned Unicode pinyin (e.g. 'háng'); the curation endpoints
+# below accept either form and normalize back to ASCII ('hang2').
+
+_TONED_VOWELS = {
+    "ā": ("a", "1"), "á": ("a", "2"), "ǎ": ("a", "3"), "à": ("a", "4"),
+    "ē": ("e", "1"), "é": ("e", "2"), "ě": ("e", "3"), "è": ("e", "4"),
+    "ī": ("i", "1"), "í": ("i", "2"), "ǐ": ("i", "3"), "ì": ("i", "4"),
+    "ō": ("o", "1"), "ó": ("o", "2"), "ǒ": ("o", "3"), "ò": ("o", "4"),
+    "ū": ("u", "1"), "ú": ("u", "2"), "ǔ": ("u", "3"), "ù": ("u", "4"),
+    "ǖ": ("u:", "1"), "ǘ": ("u:", "2"), "ǚ": ("u:", "3"), "ǜ": ("u:", "4"),
+    "ü": ("u:", "5"),
+    "Ā": ("A", "1"), "Á": ("A", "2"), "Ǎ": ("A", "3"), "À": ("A", "4"),
+    "Ē": ("E", "1"), "É": ("E", "2"), "Ě": ("E", "3"), "È": ("E", "4"),
+    "Ī": ("I", "1"), "Í": ("I", "2"), "Ǐ": ("I", "3"), "Ì": ("I", "4"),
+    "Ō": ("O", "1"), "Ó": ("O", "2"), "Ǒ": ("O", "3"), "Ò": ("O", "4"),
+    "Ū": ("U", "1"), "Ú": ("U", "2"), "Ǔ": ("U", "3"), "Ù": ("U", "4"),
+    "Ǖ": ("U:", "1"), "Ǘ": ("U:", "2"), "Ǚ": ("U:", "3"), "Ǜ": ("U:", "4"),
+    "Ü": ("U:", "5"),
+}
+
+
+def unparse_pinyin(pinyin):
+    """Normalize a pinyin string to ASCII + tone digit ('háng' -> 'hang2').
+
+    Accepts ASCII form already ('hang2' passes through, lowercased) and toned
+    Unicode. A toneless syllable is treated as neutral tone ('de' -> 'de5'),
+    mirroring parsePinyin's 'r5' -> 'r' special case in reverse.
+    """
+    if not pinyin:
+        return pinyin
+    if looks_like_pinyin(pinyin):
+        return pinyin.lower()
+    for i, ch in enumerate(pinyin):
+        if ch in _TONED_VOWELS:
+            base, tone = _TONED_VOWELS[ch]
+            return (pinyin[:i] + base + pinyin[i + 1:]).lower() + tone
+    # No tone mark: treat as neutral tone only if it looks like a syllable
+    # (contains a vowel). Otherwise return it unchanged so the caller's
+    # looks_like_pinyin check rejects it instead of blessing garbage.
+    lowered = pinyin.lower()
+    if any(v in lowered for v in "aoeiuv\u00fc"):
+        return lowered + "5"
+    return pinyin
+
+
+# --- dismissed suggestions -------------------------------------------------
+# "Mark as wrong" records (character, dictionary reading, g2pM suggestion)
+# triples in data/g2pm_dismissed.json. A dismissed triple never flags a
+# conflict again: the key captures "where the dictionary reads this char as
+# X, don't bother me when the model says Y".
+
+_dismissed = None
+
+
+def _dismissed_path():
+    try:
+        from django.conf import settings
+        return str(settings.BASE_DIR / "data" / "g2pm_dismissed.json")
+    except Exception:
+        import os
+        return os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "..", "data",
+            "g2pm_dismissed.json")
+
+
+def _load_dismissed():
+    """Lazily load the dismissed-suggestion set. Never raises."""
+    global _dismissed
+    if _dismissed is not None:
+        return _dismissed
+    _dismissed = set()
+    try:
+        import json
+        with open(_dismissed_path()) as f:
+            for row in json.load(f):
+                _dismissed.add((row["char"], row["dict_pinyin"],
+                                row["suggested_pinyin"]))
+    except Exception:
+        pass
+    return _dismissed
+
+
+def clear_dismissed_cache():
+    """Forget the cached dismissal set so the next lookup re-reads the file."""
+    global _dismissed
+    _dismissed = None
+
+
+def is_dismissed(char, dict_pinyin, suggested_pinyin):
+    """Whether this (char, dict reading -> model suggestion) was marked wrong."""
+    return (char, unparse_pinyin(dict_pinyin), unparse_pinyin(suggested_pinyin)) \
+        in _load_dismissed()
+
 
 def is_enabled():
     """Whether the g2pM disambiguation step should run.
@@ -68,7 +162,7 @@ def model_available():
     """
     if not is_enabled():
         return False
-    return get_model() is not None
+    return _get_model() is not None
 
 
 def advisory_mode():
@@ -82,6 +176,8 @@ def advisory_mode():
     try:
         from django.conf import settings
         return bool(getattr(settings, "G2PM_ADVISORY_MODE", True))
+    except Exception:
+        return True
     except Exception:
         return True
 
@@ -167,6 +263,9 @@ def resolve_pinyin(char, dict_pinyin, char_entries, g2pm_pinyin):
         return dict_pinyin, SOURCE_DICT
     if g2pm_pinyin.lower() == dict_pinyin.lower():
         # The model agrees with the dictionary; nothing to highlight.
+        return dict_pinyin, SOURCE_DICT
+    if is_dismissed(char, dict_pinyin, g2pm_pinyin):
+        # The user marked this suggestion wrong; never flag it again.
         return dict_pinyin, SOURCE_DICT
     candidates = _distinct_readings(char_entries) if char_entries else []
     if len(candidates) < 2:

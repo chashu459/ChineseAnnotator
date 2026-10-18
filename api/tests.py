@@ -4,8 +4,10 @@ from api.polyphone import (
     SOURCE_CONFLICT,
     SOURCE_DICT,
     SOURCE_G2PM,
+    is_dismissed,
     resolve_pinyin,
     select_pinyin,
+    unparse_pinyin,
 )
 
 
@@ -78,3 +80,57 @@ class PolyphoneResolvePinyinTest(TestCase):
         entries = self._entries("ni3")
         pinyin, source = resolve_pinyin("\u4f60", "ni3", entries, "na3")
         self.assertEqual((pinyin, source), ("ni3", SOURCE_DICT))
+
+
+class PolyphoneUnparseTest(TestCase):
+    """unparse_pinyin: toned/ASCII -> ASCII + tone digit."""
+
+    def test_ascii_passes_through_lowercased(self):
+        self.assertEqual(unparse_pinyin("HANG2"), "hang2")
+
+    def test_toned_to_ascii(self):
+        self.assertEqual(unparse_pinyin("háng"), "hang2")
+        self.assertEqual(unparse_pinyin("xíng"), "xing2")
+        self.assertEqual(unparse_pinyin("zhǎng"), "zhang3")
+
+    def test_umlaut(self):
+        self.assertEqual(unparse_pinyin("lǜ"), "lu:4")
+        self.assertEqual(unparse_pinyin("lü"), "lu:5")
+
+    def test_toneless_is_neutral(self):
+        self.assertEqual(unparse_pinyin("de"), "de5")
+
+    def test_empty(self):
+        self.assertEqual(unparse_pinyin(""), "")
+
+    def test_garbage_is_not_blessed(self):
+        # No vowel: returned unchanged so looks_like_pinyin rejects it.
+        self.assertEqual(unparse_pinyin("zzz"), "zzz")
+
+
+class PolyphoneDismissTest(TestCase):
+    """A dismissed (char, dict -> suggestion) triple never flags again."""
+
+    def _entries(self, *pinyins):
+        return [{"pinyin": p} for p in pinyins]
+
+    def test_dismissed_suggestion_returns_dict_source(self):
+        import api.polyphone as polyphone
+        polyphone._dismissed = {("\u884c", "xing2", "hang2")}
+        try:
+            pinyin, source = resolve_pinyin(
+                "\u884c", "xing2", self._entries("xing2", "hang2"), "hang2")
+            self.assertEqual((pinyin, source), ("xing2", SOURCE_DICT))
+        finally:
+            polyphone.clear_dismissed_cache()
+
+    def test_non_dismissed_still_conflicts(self):
+        import api.polyphone as polyphone
+        polyphone._dismissed = set()
+        try:
+            pinyin, source = resolve_pinyin(
+                "\u957f", "chang2",
+                self._entries("chang2", "zhang3"), "zhang3")
+            self.assertEqual(source, SOURCE_CONFLICT)
+        finally:
+            polyphone.clear_dismissed_cache()

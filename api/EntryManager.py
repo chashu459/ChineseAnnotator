@@ -334,6 +334,20 @@ class EntryManagerSingleton(object):
 
         self._get_cached.cache_clear()
         
+    def reloadPriorities(self):
+        """Re-read only the priority datamap (after priority.json changed)."""
+        with open(os.path.join(DATA_DIR, f"datamap{PRIORITY}.json")) as f:
+            data = json.load(f)
+            self.dictPriority = data
+        self._get_cached.cache_clear()
+
+    def reloadCustoms(self):
+        """Re-read only the custom datamap (after custom.json changed)."""
+        with open(os.path.join(DATA_DIR, f"datamap{CUSTOM}.json")) as f:
+            data = json.load(f)
+            self.dictCustom = data
+        self._get_cached.cache_clear()
+
     def reload(self):
         self.clear()
         self.load()
