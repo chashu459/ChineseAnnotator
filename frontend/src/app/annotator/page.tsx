@@ -1361,12 +1361,13 @@ export default function AnnotatorPage() {
     const fragmentToneClass = viewMode === "reader" ? "text-slate-800" : "text-slate-900";
     const highlighted = lookupSelected || dragSelected;
     const pinyinSource = fragment.source ?? "dict";
-    const devSourceClass =
-      devMode && pinyinSource !== "dict"
-        ? pinyinSource === "g2pm"
-          ? "underline decoration-emerald-500 decoration-2 underline-offset-[6px]"
-          : "underline decoration-amber-500 decoration-2 underline-offset-[6px]"
-        : "";
+    const devSourceClass = !devMode
+      ? ""
+      : pinyinSource === "g2pm"
+        ? "underline decoration-emerald-500 decoration-2 underline-offset-[6px]"
+        : pinyinSource === "conflict"
+          ? "underline decoration-amber-500 decoration-2 underline-offset-[6px]"
+          : "underline decoration-slate-400 decoration-2 underline-offset-[6px]";
 
     return (
       <button
@@ -1549,7 +1550,9 @@ export default function AnnotatorPage() {
             <span className="underline decoration-amber-500 decoration-2 underline-offset-4">
               conflict · dictionary kept
             </span>
-            <span className="text-slate-400">no underline = dictionary</span>
+            <span className="underline decoration-slate-400 decoration-2 underline-offset-4">
+              dictionary
+            </span>
           </div>
         )}
 
