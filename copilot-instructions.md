@@ -8,11 +8,11 @@ This is a **Chinese reading-learning application** that helps users who can spea
 
 | Layer | Technology |
 |---|---|
-| Backend API | Django 4.x + Django REST Framework (DRF) 3.x |
+| Backend API | Django 5.2 LTS + Django REST Framework (DRF) 3.18.x |
 | Frontend UI | Next.js 16 with React 19, Tailwind CSS 4, TypeScript 5 |
 | Bundler | Next.js built-in bundler |
 | HTTP Client | axios (with Django CSRF token support configured) |
-| Language (backend) | Python 3 |
+| Language (backend) | Python 3.12 (pinned via `.python-version`; Render also reads `PYTHON_VERSION` in `render.yaml`) |
 | Language (frontend) | TypeScript |
 | Python Environment & Dependency Tool | uv (`uv venv`, `uv pip`, `uv run`) with `requirements.txt` |
 | Data | CEDict dictionary, custom Trie structure for lookups |
