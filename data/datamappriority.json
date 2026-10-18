@@ -860,5 +860,15 @@
       "notes": "healthy fat.",
       "priority": 300
     }
+  ],
+  "priority::看": [
+    {
+      "traditional": "看",
+      "simplified": "看",
+      "pinyin": "kan4",
+      "english": "to look after/to take care of/to watch/to guard",
+      "reason": "g2pM curation",
+      "priority": 300
+    }
   ]
 }
