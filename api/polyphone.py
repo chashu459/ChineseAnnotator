@@ -529,6 +529,16 @@ def resolve_pinyin(char, dict_pinyin, char_entries, g2pm_pinyin, prev_char="",
     if g2pm_pinyin.lower() == dict_pinyin.lower():
         # The model agrees with the dictionary; nothing to highlight.
         return dict_pinyin, SOURCE_DICT
+    if (prev_char or next_char) and dict_pinyin.endswith("5"):
+        # Neutral-tone grammatical particles (de5, le5, men5, zi5, ...) in
+        # multi-character phrases: if the model only differs by assigning a
+        # full tone to the same syllable, it's not a real polyphone ambiguity
+        # -- the neutral tone is grammatical. Silently keep the dictionary
+        # reading instead of flagging noise.
+        dict_base = dict_pinyin[:-1].lower()
+        model_base = g2pm_pinyin[:-1].lower()
+        if dict_base == model_base and g2pm_pinyin[-1] in "1234":
+            return dict_pinyin, SOURCE_DICT
     if is_dismissed(char, dict_pinyin, g2pm_pinyin, prev_char, next_char):
         # The user marked this suggestion wrong in this context; never flag
         # it again here (it can still flag in other contexts).
