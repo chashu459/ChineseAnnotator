@@ -491,6 +491,11 @@ class ProvenanceView(APIView):
         text = request.data.get('text', '') if isinstance(request.data, dict) else ''
         if not isinstance(text, str) or not text.strip():
             return Response([], status=status.HTTP_200_OK)
+        # Fail loudly (dev-only endpoint): silently returning all-dict would
+        # make missing-model deployments indistinguishable from "no conflicts".
+        if not polyphone.model_available():
+            return Response({"detail": "g2pM model unavailable"},
+                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
         data = AnnotationView().annotate("default", text, with_provenance=True)
         responseData = [PhraseEntrySerializer(phrase).data if isinstance(phrase, PhraseEntry)
                         else ChineseEntrySerializer(phrase).data for phrase in data]

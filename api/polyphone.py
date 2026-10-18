@@ -59,6 +59,18 @@ def is_enabled():
         return True
 
 
+def model_available():
+    """Whether the g2pM model is installed and loadable.
+
+    Unlike predict_char_pinyins (which silently falls back to None), this is
+    for callers that want to fail loudly, e.g. the dev-only provenance
+    endpoint. The load result is cached, so repeated calls are cheap.
+    """
+    if not is_enabled():
+        return False
+    return _get_model() is not None
+
+
 def advisory_mode():
     """Whether g2pM may only flag disagreements, never override (default True).
 

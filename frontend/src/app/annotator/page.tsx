@@ -36,6 +36,14 @@ import {
 const NBSP = "\u00a0";
 const MANUAL_READER_DRAFT_KEY = "annotator.manualReaderDraft";
 
+// Evaluated at call time so background work (e.g. the dev-only provenance
+// pass) never acts on a stale closure value. The devMode *state* below is
+// still what render output keys off.
+function isDevMode(): boolean {
+  if (typeof window === "undefined") return false;
+  return new URLSearchParams(window.location.search).get("dev") === "1";
+}
+
 type SecondaryPanel = "library" | "review" | "menu" | null;
 type ViewMode = "reader" | "dictionary";
 
@@ -615,8 +623,9 @@ export default function AnnotatorPage() {
   // first client render agree -- reading window.location during SSR
   // causes a hydration mismatch.
   const [devMode, setDevMode] = useState<boolean>(false);
+  const [provenanceFailed, setProvenanceFailed] = useState<boolean>(false);
   useEffect(() => {
-    setDevMode(new URLSearchParams(window.location.search).get("dev") === "1");
+    setDevMode(isDevMode());
   }, []);
   const [activeLookup, setActiveLookup] = useState<LookupTarget | null>(null);
   const [fragmentLookupEntries, setFragmentLookupEntries] = useState<DictionaryEntry[]>(
@@ -1037,6 +1046,7 @@ export default function AnnotatorPage() {
 
       setAnnotating(true);
       setErrorMessage(null);
+      setProvenanceFailed(false);
       resetLookupState();
 
       try {
@@ -1058,7 +1068,8 @@ export default function AnnotatorPage() {
         // and swap the highlights in when it finishes. The fast pass above
         // already shows the readings; this only adds provenance flags, so a
         // stale response must never overwrite a newer annotation.
-        if (devMode) {
+        // isDevMode() is read live so this never depends on a stale closure.
+        if (isDevMode()) {
           const requestId = ++provenanceRequestRef.current;
           void Promise.all(
             segments.map((segment) =>
@@ -1075,7 +1086,9 @@ export default function AnnotatorPage() {
               }
             })
             .catch(() => {
-              // Provenance is best-effort; the fast pass is already shown.
+              // Surface the failure in the dev legend: a silent all-dict
+              // result is indistinguishable from "no conflicts" otherwise.
+              setProvenanceFailed(true);
             });
         }
       } catch (error) {
@@ -1084,7 +1097,7 @@ export default function AnnotatorPage() {
         setAnnotating(false);
       }
     },
-    [devMode, resetLookupState, showToast],
+    [resetLookupState, showToast],
   );
 
   useEffect(() => {
@@ -1579,6 +1592,11 @@ export default function AnnotatorPage() {
               conflict · dictionary kept
             </span>
             <span className="text-slate-400">no underline = dictionary</span>
+            {provenanceFailed && (
+              <span className="font-semibold text-rose-500">
+                · g2pM provenance unavailable
+              </span>
+            )}
           </div>
         )}
 
