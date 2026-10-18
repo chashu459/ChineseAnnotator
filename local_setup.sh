@@ -10,7 +10,7 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 if [ ! -d ./.venv ]; then
-	uv venv --python 3.8.10
+	uv venv --python 3.12
 fi
 
 . ./setenv
