@@ -546,8 +546,10 @@ class CuratePriorityView(APIView):
     top-priority entry, swaps the reading at char_index for the suggestion,
     and persists it so the suggestion becomes the displayed reading:
     - if a dictionary entry with the corrected pinyin already exists, a
-      priority.json entry boosts it to USER_PRIORITY;
-    - otherwise a custom.json entry adds the new reading (CUSTOM_PRIORITY).
+      priority.json entry boosts that entry (carrying its own definition,
+      not the top entry's) to USER_PRIORITY;
+    - otherwise a custom.json entry adds the new reading (CUSTOM_PRIORITY),
+      with the english copied from the top entry as a fallback.
     The datamap is rebuilt and EntryManager reloaded, so the change is live
     immediately. suggested_pinyin may be toned ('háng') or ASCII ('hang2').
     """
@@ -583,18 +585,22 @@ class CuratePriorityView(APIView):
         parts[char_index] = suggested
         corrected = " ".join(parts)
 
-        if any(e.get("pinyin") == corrected for e in entries):
-            # The reading exists; boost it via priority.json.
+        match = next((e for e in entries if e.get("pinyin") == corrected),
+                     None)
+        if match is not None:
+            # The reading already exists in the dictionary: boost the entry
+            # that actually carries it -- with its own definition -- rather
+            # than the top entry's.
             path = _data_path("priority.json")
             rows = _read_json_list(path)
-            done = any(r.get("simplified") == top["simplified"]
+            done = any(r.get("simplified") == match["simplified"]
                        and r.get("pinyin") == corrected for r in rows)
             if not done:
                 rows.append({
-                    "traditional": top["traditional"],
-                    "simplified": top["simplified"],
+                    "traditional": match["traditional"],
+                    "simplified": match["simplified"],
                     "pinyin": corrected,
-                    "english": top.get("english", ""),
+                    "english": match.get("english", ""),
                     "reason": "g2pM curation",
                 })
                 with open(path, "w") as f:

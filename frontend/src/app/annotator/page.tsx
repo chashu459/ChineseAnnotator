@@ -1536,12 +1536,6 @@ export default function AnnotatorPage() {
             title={`g2pM suggests ${formatPinyin(fragment.suggested_pinyin)} instead of ${formatPinyin(fragment.pinyin)} — tap for details`}
           >
             {formatPinyin(fragment.suggested_pinyin)}
-            {fragment.confidence != null ? (
-              <span className="font-normal text-amber-500">
-                {" "}
-                · {Math.round(fragment.confidence * 100)}%
-              </span>
-            ) : null}
           </span>
         ) : null}
         <span
@@ -2096,15 +2090,6 @@ export default function AnnotatorPage() {
                       {formatPinyin(activeLookup.fragment.suggested_pinyin)}
                     </span>{" "}
                     instead of {formatPinyin(activeLookup.fragment.pinyin)}
-                    {activeLookup.fragment.confidence != null ? (
-                      <span className="text-xs text-amber-700">
-                        {" "}
-                        · {Math.round(
-                          activeLookup.fragment.confidence * 100,
-                        )}
-                        % confident
-                      </span>
-                    ) : null}
                   </p>
                   <div className="mt-2 flex gap-2">
                     <button
