@@ -1,6 +1,12 @@
 from django.test import TestCase
 
-from api.polyphone import select_pinyin
+from api.polyphone import (
+    SOURCE_CONFLICT,
+    SOURCE_DICT,
+    SOURCE_G2PM,
+    resolve_pinyin,
+    select_pinyin,
+)
 
 
 class PolyphoneSelectPinyinTest(TestCase):
@@ -32,3 +38,35 @@ class PolyphoneSelectPinyinTest(TestCase):
     def test_match_is_case_insensitive(self):
         entries = self._entries("xing2", "hang2")
         self.assertEqual(select_pinyin("\u884c", entries, "HANG2"), "hang2")
+
+
+class PolyphoneResolvePinyinTest(TestCase):
+    """Provenance tests for api/polyphone.resolve_pinyin."""
+
+    def _entries(self, *pinyins):
+        return [{"pinyin": p} for p in pinyins]
+
+    def test_agreement_reports_dict_source(self):
+        entries = self._entries("xing2", "hang2")
+        pinyin, source = resolve_pinyin("\u884c", "xing2", entries, "xing2")
+        self.assertEqual((pinyin, source), ("xing2", SOURCE_DICT))
+
+    def test_override_reports_g2pm_source(self):
+        entries = self._entries("xing2", "hang2")
+        pinyin, source = resolve_pinyin("\u884c", "xing2", entries, "hang2")
+        self.assertEqual((pinyin, source), ("hang2", SOURCE_G2PM))
+
+    def test_unknown_prediction_reports_conflict_and_keeps_default(self):
+        entries = self._entries("xing2", "hang2")
+        pinyin, source = resolve_pinyin("\u884c", "xing2", entries, "heng2")
+        self.assertEqual((pinyin, source), ("xing2", SOURCE_CONFLICT))
+
+    def test_missing_prediction_reports_dict_source(self):
+        entries = self._entries("xing2", "hang2")
+        pinyin, source = resolve_pinyin("\u884c", "xing2", entries, None)
+        self.assertEqual((pinyin, source), ("xing2", SOURCE_DICT))
+
+    def test_monophonic_character_reports_dict_source(self):
+        entries = self._entries("ni3")
+        pinyin, source = resolve_pinyin("\u4f60", "ni3", entries, "na3")
+        self.assertEqual((pinyin, source), ("ni3", SOURCE_DICT))

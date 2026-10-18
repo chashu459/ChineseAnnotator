@@ -252,6 +252,45 @@ class AnnotationView(APIView):
 
         return lst
 
+    def _resolve_phrase_pinyins(self, phrase, entries, poly_pinyins, pos, trad):
+        """Resolve per-character pinyin and provenance for a phrase.
+
+        Starts from the top-priority entry's readings, then lets g2pM's
+        contextual predictions override individual characters -- for
+        single-character phrases and for phrase-internal ambiguities like
+        长长 (e.g. 头发长长了 -> zhang3 chang2)
+        alike -- constrained to known dictionary readings (see
+        api/polyphone.py). Returns (pinyins, sources) with one ASCII pinyin
+        and one provenance ('dict' | 'g2pm' | 'conflict') per character.
+        """
+        default_pinyins = [p for p in entries[0]['pinyin'].split(" ") if p != "-"]
+        pinyins = []
+        sources = []
+        for i, ch in enumerate(phrase):
+            if i >= len(default_pinyins):
+                break
+            dict_pinyin = default_pinyins[i]
+            g2pm_pinyin = None
+            if (poly_pinyins is not None and isChinese(ch)
+                    and pos + i < len(poly_pinyins)):
+                candidate = poly_pinyins[pos + i]
+                if (polyphone.looks_like_pinyin(candidate)
+                        and candidate.lower() != dict_pinyin.lower()):
+                    g2pm_pinyin = candidate
+            if g2pm_pinyin is None:
+                pinyins.append(dict_pinyin)
+                sources.append(polyphone.SOURCE_DICT)
+                continue
+            # The model disagrees with the dictionary on this character;
+            # only let it win when its reading is a known reading of the
+            # character on its own.
+            char_entries = EntryManager.get(ch, trad=trad)
+            resolved, source = polyphone.resolve_pinyin(
+                ch, dict_pinyin, char_entries, g2pm_pinyin)
+            pinyins.append(resolved)
+            sources.append(source)
+        return pinyins, sources
+
     def annotate(self, owner: str, text: str):
         print("===============================")
         print(text)
@@ -353,17 +392,8 @@ class AnnotationView(APIView):
                         entries = EntryManager.get(phrase, trad=trad)
                         # print(entries)
                         if(entries):
-                            # g2pM disambiguation: for a single-character phrase
-                            # with multiple known readings, let the contextual
-                            # prediction re-rank the dictionary candidates.
-                            g2pm_pinyin = None
-                            if (poly_pinyins is not None and len(phrase) == 1
-                                    and isChinese(phrase) and pos < len(poly_pinyins)):
-                                g2pm_pinyin = poly_pinyins[pos]
-                            if g2pm_pinyin is None:
-                                entry = entries[0]
-                            else:
-                                entry = {"pinyin": polyphone.select_pinyin(phrase, entries, g2pm_pinyin)}
+                            pinyin, sources = self._resolve_phrase_pinyins(
+                                phrase, entries, poly_pinyins, pos, trad)
                             # print("entry: '" +  + "'")
                             # pprint(entry)
 
@@ -373,9 +403,6 @@ class AnnotationView(APIView):
                             # pinyin = entry[0].split(" ")
                             # english = entry[1]
 
-                            pinyin = entry['pinyin'].split(" ")
-                            while (pinyin.count("-")):
-                                pinyin.remove("-") 
                             # english = entry['english']
 
                             # print(pinyin)
@@ -391,7 +418,8 @@ class AnnotationView(APIView):
                             phraselst = []
                             for i in range(len(phrase)):
                                 phraselst.append(
-                                    ChineseEntry(parsePinyin(pinyin[i]), phrase[i])
+                                    ChineseEntry(parsePinyin(pinyin[i]), phrase[i],
+                                                 source=sources[i])
                                 )
                             lst.append(PhraseEntry(phraselst))
                         else:

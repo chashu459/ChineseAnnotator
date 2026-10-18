@@ -33,6 +33,13 @@ import re
 # (The repo's parsePinyin in api/utils.py converts this to toned Unicode.)
 _PINYIN_RE = re.compile(r"^[a-zA-Z\xfc\xdc:]+[1-5]$")
 
+# Provenance of a character's pinyin, exposed to the frontend so it can
+# highlight where each reading came from (dev mode only).
+SOURCE_DICT = "dict"        # dictionary / priority-list reading used
+SOURCE_G2PM = "g2pm"        # g2pM's contextual prediction overrode the dictionary
+SOURCE_CONFLICT = "conflict"  # g2pM disagreed but its reading isn't a known
+                              # candidate, so the dictionary reading was kept
+
 _model = None
 _model_failed = False
 
@@ -95,12 +102,62 @@ def predict_char_pinyins(text):
     return pinyins
 
 
-def _looks_like_pinyin(token):
+def looks_like_pinyin(token):
+    """Whether a g2pM output token looks like an ASCII pinyin reading."""
     return isinstance(token, str) and bool(_PINYIN_RE.match(token))
+
+
+def _distinct_readings(entries):
+    """Distinct known readings across entries, in priority order."""
+    readings = []
+    for entry in entries:
+        for p in entry["pinyin"].split(" "):
+            if p == "-" or p in readings:
+                continue
+            readings.append(p)
+    return readings
+
+
+def resolve_pinyin(char, dict_pinyin, char_entries, g2pm_pinyin):
+    """Resolve one character's pinyin and its provenance.
+
+    Args:
+        char: the Chinese character being annotated.
+        dict_pinyin: the reading from the phrase's top-priority dictionary
+            entry (ASCII, e.g. 'chang2').
+        char_entries: EntryManager entries for the single character, used to
+            validate the g2pM prediction against known readings; may be None.
+        g2pm_pinyin: g2pM's contextual prediction for this character
+            (e.g. 'zhang3'), or None.
+
+    Returns:
+        (pinyin, source): the ASCII pinyin to use and where it came from --
+        SOURCE_DICT, SOURCE_G2PM or SOURCE_CONFLICT.
+    """
+    if not g2pm_pinyin or not looks_like_pinyin(g2pm_pinyin):
+        return dict_pinyin, SOURCE_DICT
+    if g2pm_pinyin.lower() == dict_pinyin.lower():
+        # The model agrees with the dictionary; nothing to highlight.
+        return dict_pinyin, SOURCE_DICT
+    candidates = _distinct_readings(char_entries) if char_entries else []
+    if len(candidates) < 2:
+        # Not actually polyphonic in our dictionary; nothing to disambiguate.
+        return dict_pinyin, SOURCE_DICT
+    wanted = g2pm_pinyin.lower()
+    for candidate in candidates:
+        if candidate.lower() == wanted:
+            return candidate, SOURCE_G2PM
+    # g2pM disagreed with the dictionary but its reading isn't a known
+    # candidate for this character, so keep the dictionary reading and flag
+    # the conflict for dictionary curation.
+    return dict_pinyin, SOURCE_CONFLICT
 
 
 def select_pinyin(phrase, entries, g2pm_pinyin):
     """Choose the ASCII pinyin for a single-character phrase.
+
+    Backwards-compatible wrapper around resolve_pinyin returning just the
+    pinyin (drops the provenance). Prefer resolve_pinyin for new code.
 
     Args:
         phrase: single Chinese character the Trie segmented.
@@ -115,24 +172,5 @@ def select_pinyin(phrase, entries, g2pm_pinyin):
     """
     default = [p for p in entries[0]["pinyin"].split(" ") if p != "-"]
     default_pinyin = default[0] if default else entries[0]["pinyin"]
-
-    if not g2pm_pinyin or not _looks_like_pinyin(g2pm_pinyin):
-        return default_pinyin
-
-    # Collect the distinct known readings, in priority order.
-    candidates = []
-    for entry in entries:
-        for p in entry["pinyin"].split(" "):
-            if p == "-" or p in candidates:
-                continue
-            candidates.append(p)
-    if len(candidates) < 2:
-        # Not actually polyphonic in our dictionary; nothing to disambiguate.
-        return default_pinyin
-
-    wanted = g2pm_pinyin.lower()
-    for candidate in candidates:
-        if candidate.lower() == wanted:
-            return candidate
-    # g2pM predicted a reading our dictionary doesn't know; keep the default.
-    return default_pinyin
+    pinyin, _source = resolve_pinyin(phrase, default_pinyin, entries, g2pm_pinyin)
+    return pinyin

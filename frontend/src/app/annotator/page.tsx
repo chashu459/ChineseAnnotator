@@ -608,6 +608,13 @@ export default function AnnotatorPage() {
   const [loadingChapter, setLoadingChapter] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("reader");
+  // Dev-only pinyin provenance highlights, enabled with ?dev=1 in the URL.
+  // Underline marks characters whose reading came from the g2pM model or
+  // conflicted with the dictionary (see api/polyphone.py).
+  const [devMode] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return new URLSearchParams(window.location.search).get("dev") === "1";
+  });
   const [activeLookup, setActiveLookup] = useState<LookupTarget | null>(null);
   const [fragmentLookupEntries, setFragmentLookupEntries] = useState<DictionaryEntry[]>(
     [],
@@ -1350,6 +1357,13 @@ export default function AnnotatorPage() {
     const hidePinyin = viewMode === "reader" && selected;
     const fragmentToneClass = viewMode === "reader" ? "text-slate-800" : "text-slate-900";
     const highlighted = lookupSelected || dragSelected;
+    const pinyinSource = fragment.source ?? "dict";
+    const devSourceClass =
+      devMode && pinyinSource !== "dict"
+        ? pinyinSource === "g2pm"
+          ? "underline decoration-emerald-500 decoration-2 underline-offset-[6px]"
+          : "underline decoration-amber-500 decoration-2 underline-offset-[6px]"
+        : "";
 
     return (
       <button
@@ -1359,6 +1373,7 @@ export default function AnnotatorPage() {
         data-lookup-selected={lookupSelected ? 'true' : 'false'}
         data-fragment-cchar={fragment.cchar}
         data-fragment-pinyin={fragment.pinyin}
+        data-pinyin-source={pinyinSource}
         onPointerDown={() => beginLongPress(fragment, phrase)}
         onPointerUp={() => handleFragmentPointerUp(fragment, phrase)}
         onPointerMove={handleFragmentPointerMove}
@@ -1386,7 +1401,7 @@ export default function AnnotatorPage() {
         >
           {formatPinyin(fragment.pinyin)}
         </span>
-        <span className="reader-character text-[1.4rem] font-medium leading-7">
+        <span className={`reader-character text-[1.4rem] font-medium leading-7 ${devSourceClass}`}>
           {fragment.cchar}
         </span>
       </button>
@@ -1519,6 +1534,21 @@ export default function AnnotatorPage() {
           selectedCount={selectedFragments.length}
           readerLabel={readerLabel}
         />
+
+        {devMode && (
+          <div className="mb-1 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-2xl border border-dashed border-slate-300 bg-slate-50/80 px-4 py-2 text-xs text-slate-600">
+            <span className="font-semibold uppercase tracking-[0.18em] text-slate-500">
+              dev · pinyin source
+            </span>
+            <span className="underline decoration-emerald-500 decoration-2 underline-offset-4">
+              g2pM override
+            </span>
+            <span className="underline decoration-amber-500 decoration-2 underline-offset-4">
+              conflict · dictionary kept
+            </span>
+            <span className="text-slate-400">no underline = dictionary</span>
+          </div>
+        )}
 
         {errorMessage && (
           <div

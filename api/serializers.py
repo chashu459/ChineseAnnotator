@@ -194,9 +194,14 @@ class AnnotationSerializer(serializers.Serializer):
 #     )
 
 class ChineseEntrySerializer(serializers.ModelSerializer):
+    # 'source' is not a Fragment model field; declared explicitly so the
+    # pinyin provenance set by api/polyphone.py is serialized from the
+    # ChineseEntry dicts.
+    source = serializers.CharField(required=False, default="dict")
+
     class Meta:
         model = Fragment
-        fields = ('pinyin', 'cchar')
+        fields = ('pinyin', 'cchar', 'source')
 
 
 class PhraseEntrySerializer(serializers.Serializer):
