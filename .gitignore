@@ -136,3 +136,5 @@ staticfiles/
 
 # macOS
 .DS_Store
+
+data/models
