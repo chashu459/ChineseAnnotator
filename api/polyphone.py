@@ -196,7 +196,7 @@ def advisory_mode():
         return True
 
 
-def get_model():
+def _get_model():
     """Lazily load and cache the g2pM model. Returns None if unavailable."""
     global _model, _model_failed
     if _model is not None:
@@ -297,7 +297,7 @@ def predict_with_confidence(text):
     """
     if not text or not is_enabled():
         return None, {}
-    model = get_model()
+    model = _get_model()
     if model is None:
         return None, {}
     try:
