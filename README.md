@@ -2,10 +2,40 @@
 
 ## Backend (Django)
 
-Use `uv` to manage the Python environment and dependencies for this project.
+Python 3.12 + Django 6.1. Use `uv` to manage the Python environment and dependencies.
 NOTE: Deploy/runtime targets Python 3.12 (see `.python-version`; Render also reads the `PYTHON_VERSION` env var in `render.yaml`).
 
-### macOS (Homebrew)
+### Quick start
+
+For a first-time local checkout, run the setup script from the repository root:
+
+```bash
+bash local_setup.sh
+```
+
+It does the whole local setup for you:
+
+1. verifies `uv` is installed (if not, install it first — `brew install uv` on macOS, or the `curl` installer on Ubuntu; see below)
+2. creates a Python 3.12 virtual environment in `.venv/` (skipped if one already exists)
+3. installs the backend dependencies from `requirements.txt`
+4. creates `static/` and collects static assets (`collectstatic`)
+5. applies Django migrations to the local `db.sqlite3`
+6. installs the frontend dependencies in `frontend/` when `npm` is available
+
+Then start the backend and frontend in separate terminals:
+
+```bash
+uv run python manage.py runserver
+```
+
+```bash
+cd frontend
+npm run dev
+```
+
+### Manual setup (step-by-step, if you prefer)
+
+#### macOS (Homebrew)
 
 Install `uv` with Homebrew:
 
@@ -20,28 +50,28 @@ If needed, verify versions:
 uv --version
 ```
 
-### Ubuntu (alternative)
+#### Ubuntu (alternative)
 
 Install system Python and `uv`:
 
 ```bash
 sudo apt-get update
-sudo apt install python3.8 python3-pip
+sudo apt install python3.12 python3-pip
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
 Then restart your shell (or source your shell profile) so `uv` is on your `PATH`.
 
-### Creating the uv-managed environment
+#### Creating the uv-managed environment
 
 When you're in the base directory, `AnnotatorBackend`
 
 ```bash
-uv venv --python 3.8.10
+uv venv --python 3.12
 . ./setenv
 ```
 
-#### Contents of ./setenv
+##### Contents of ./setenv
 
 ```bash
 source ./.venv/bin/activate
@@ -53,36 +83,6 @@ IMPORTANT! Make sure to execute `. ./setenv` in the base folder to activate the 
 
 ```bash
 uv pip install -r requirements.txt
-```
-
-### First-time local setup
-
-For a first-time local checkout on macOS, the fastest path is:
-
-```bash
-brew install uv
-brew install sqlite
-bash local_setup.sh
-```
-
-What `local_setup.sh` does:
-
-1. creates a local Python 3.8.10 virtual environment with `uv` if needed
-2. installs backend dependencies from `requirements.txt`
-3. creates the local `static/` directory
-4. collects static assets with Django `collectstatic`
-5. applies Django migrations to `db.sqlite3`
-6. installs frontend dependencies in `frontend/`
-
-After that, start the backend and the new frontend in separate terminals:
-
-```bash
-uv run python manage.py runserver
-```
-
-```bash
-cd frontend
-npm run dev
 ```
 
 If you prefer not to activate the environment first, you can run commands through `uv` directly:
