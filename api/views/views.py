@@ -526,7 +526,14 @@ class ProvenanceView(APIView):
                             status=status.HTTP_400_BAD_REQUEST)
         # Fail loudly (dev-only endpoint): silently returning all-dict would
         # make missing-model deployments indistinguishable from "no conflicts".
+        # g2pW provisions in the background; report that distinctly so the
+        # frontend can show progress instead of an error.
         if not polyphone.model_available(model):
+            if (model == polyphone.G2P_MODEL_G2PW
+                    and polyphone.g2pw_status() == polyphone.G2PW_PROVISIONING):
+                return Response({"detail": "g2pW model still provisioning",
+                                 "status": polyphone.G2PW_PROVISIONING},
+                                status=status.HTTP_503_SERVICE_UNAVAILABLE)
             return Response({"detail": f"{model} model unavailable"},
                             status=status.HTTP_503_SERVICE_UNAVAILABLE)
         data = AnnotationView().annotate("default", text, with_provenance=True,
@@ -670,7 +677,9 @@ class AddCustomPhraseView(APIView):
     POST {simplified, traditional?, pinyin, english?, notes?}: appends a
     custom.json row (deduped on simplified+pinyin), rebuilds the custom
     datamap and reloads it so the phrase annotates immediately. Pinyin is
-    space-separated ASCII readings, e.g. "ni3 hao3".
+    space-separated readings, e.g. "ni3 hao3"; toned Unicode ("nǐ hǎo")
+    and ü spellings ("nü3"/"nv3") are normalized to numbered ASCII
+    ("ni3 hao3", "nu:3") on save.
     """
 
     def post(self, request, format=None):
@@ -678,7 +687,7 @@ class AddCustomPhraseView(APIView):
         simplified = (data.get("simplified") or "").strip()
         traditional = (data.get("traditional") or "").strip() or simplified
         pinyin = " ".join(
-            polyphone.unparse_pinyin(p)
+            polyphone.normalize_pinyin(p)
             for p in (data.get("pinyin") or "").strip().split()
         )
         english = (data.get("english") or "").strip()
