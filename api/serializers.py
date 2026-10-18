@@ -198,10 +198,15 @@ class ChineseEntrySerializer(serializers.ModelSerializer):
     # pinyin provenance set by api/polyphone.py is serialized from the
     # ChineseEntry dicts.
     source = serializers.CharField(required=False, default="dict")
+    # g2pM's proposed reading (parsed form, like pinyin) when source is
+    # 'conflict'; null otherwise. Dev-mode only consumer is the annotator
+    # frontend's conflict display.
+    suggested_pinyin = serializers.CharField(required=False, allow_null=True,
+                                             default=None)
 
     class Meta:
         model = Fragment
-        fields = ('pinyin', 'cchar', 'source')
+        fields = ('pinyin', 'cchar', 'source', 'suggested_pinyin')
 
 
 class PhraseEntrySerializer(serializers.Serializer):

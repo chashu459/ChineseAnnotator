@@ -1446,6 +1446,14 @@ export default function AnnotatorPage() {
         >
           {formatPinyin(fragment.pinyin)}
         </span>
+        {devMode && pinyinSource === "conflict" && fragment.suggested_pinyin ? (
+          <span
+            className={`text-[0.62rem] font-semibold leading-3 text-amber-600 ${hidePinyin ? "invisible" : ""}`}
+            title={`g2pM suggests ${formatPinyin(fragment.suggested_pinyin)} instead of ${formatPinyin(fragment.pinyin)}`}
+          >
+            g2pM: {formatPinyin(fragment.suggested_pinyin)}
+          </span>
+        ) : null}
         <span className={`reader-character text-[1.4rem] font-medium leading-7 ${devSourceClass}`}>
           {fragment.cchar}
         </span>

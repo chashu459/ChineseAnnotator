@@ -260,12 +260,13 @@ class AnnotationView(APIView):
         single-character phrases and for phrase-internal ambiguities like
         长长 (e.g. 头发长长了 -> zhang3 chang2)
         alike -- constrained to known dictionary readings (see
-        api/polyphone.py). Returns (pinyins, sources) with one ASCII pinyin
-        and one provenance ('dict' | 'g2pm' | 'conflict') per character.
+        api/polyphone.py). Returns a list of (pinyin, source, suggested)
+        tuples, one per character: the ASCII pinyin to use, its provenance
+        ('dict' | 'g2pm' | 'conflict'), and g2pM's proposed reading when the
+        source is 'conflict' (None otherwise).
         """
         default_pinyins = [p for p in entries[0]['pinyin'].split(" ") if p != "-"]
-        pinyins = []
-        sources = []
+        resolved_chars = []
         for i, ch in enumerate(phrase):
             if i >= len(default_pinyins):
                 break
@@ -278,8 +279,7 @@ class AnnotationView(APIView):
                         and candidate.lower() != dict_pinyin.lower()):
                     g2pm_pinyin = candidate
             if g2pm_pinyin is None:
-                pinyins.append(dict_pinyin)
-                sources.append(polyphone.SOURCE_DICT)
+                resolved_chars.append((dict_pinyin, polyphone.SOURCE_DICT, None))
                 continue
             # The model disagrees with the dictionary on this character;
             # only let it win when its reading is a known reading of the
@@ -287,9 +287,9 @@ class AnnotationView(APIView):
             char_entries = EntryManager.get(ch, trad=trad)
             resolved, source = polyphone.resolve_pinyin(
                 ch, dict_pinyin, char_entries, g2pm_pinyin)
-            pinyins.append(resolved)
-            sources.append(source)
-        return pinyins, sources
+            suggested = g2pm_pinyin if source == polyphone.SOURCE_CONFLICT else None
+            resolved_chars.append((resolved, source, suggested))
+        return resolved_chars
 
     def annotate(self, owner: str, text: str, with_provenance=False):
         """Annotate text with pinyin.
@@ -406,7 +406,7 @@ class AnnotationView(APIView):
                         entries = EntryManager.get(phrase, trad=trad)
                         # print(entries)
                         if(entries):
-                            pinyin, sources = self._resolve_phrase_pinyins(
+                            resolved_chars = self._resolve_phrase_pinyins(
                                 phrase, entries, poly_pinyins, pos, trad)
                             # print("entry: '" +  + "'")
                             # pprint(entry)
@@ -421,19 +421,24 @@ class AnnotationView(APIView):
 
                             # print(pinyin)
                             # pinyin = dict.getPinYin(self.phrase).split(" ")
-                            if len(phrase) != len(pinyin):
+                            if len(phrase) != len(resolved_chars):
                                 print(
                                     "pinyin and phrase have different lengths O.o")
                                 print(f"phrase: {phrase}")
-                                print(f"pinyin: {pinyin}")
+                                print(f"pinyin: {[c[0] for c in resolved_chars]}")
                                 raise "pinyin and phrase have different lengths O.o"
 
                             # push all phrases
                             phraselst = []
                             for i in range(len(phrase)):
+                                pinyin, source, suggested = resolved_chars[i]
                                 phraselst.append(
-                                    ChineseEntry(parsePinyin(pinyin[i]), phrase[i],
-                                                 source=sources[i])
+                                    ChineseEntry(
+                                        parsePinyin(pinyin), phrase[i],
+                                        source=source,
+                                        suggested_pinyin=(parsePinyin(suggested)
+                                                          if suggested else None),
+                                    )
                                 )
                             lst.append(PhraseEntry(phraselst))
                         else:
