@@ -3,7 +3,7 @@
 ## Backend (Django)
 
 Use `uv` to manage the Python environment and dependencies for this project.
-NOTE: Deploy/runtime currently targets Python 3.8.10 (see `runtime.txt`).
+NOTE: Deploy/runtime targets Python 3.12 (see `.python-version`; Render also reads the `PYTHON_VERSION` env var in `render.yaml`).
 
 ### macOS (Homebrew)
 
