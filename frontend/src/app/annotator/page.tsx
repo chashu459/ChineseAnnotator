@@ -625,6 +625,8 @@ export default function AnnotatorPage() {
   // causes a hydration mismatch.
   const [devMode, setDevMode] = useState<boolean>(false);
   const [provenanceFailed, setProvenanceFailed] = useState<boolean>(false);
+  // Dev-only A/B: which disambiguation model the provenance pass runs.
+  const [abModel, setAbModel] = useState<"g2pm" | "g2pw">("g2pm");
   useEffect(() => {
     setDevMode(isDevMode());
   }, []);
@@ -1038,36 +1040,57 @@ export default function AnnotatorPage() {
       ? chapterList[chapterIndex + 1]
       : null;
 
-  // Dev-only (?dev=1): run the g2pM provenance pass in the background
+  // Dev-only (?dev=1): run the provenance pass in the background
   // and swap the highlights in when it finishes. Adds provenance flags on
   // top of the fast pass; a stale response must never overwrite a newer
   // annotation. isDevMode() is read live so this never depends on a stale
-  // closure.
-  const runProvenancePass = useCallback(async (sourceText: string) => {
-    if (!isDevMode()) {
-      return;
-    }
-    const requestId = ++provenanceRequestRef.current;
-    try {
-      const segments = segmentText(sourceText);
-      const provenanceResults = await Promise.all(
-        segments.map((segment) =>
-          segment.blank
-            ? Promise.resolve([])
-            : api.post<AnnotationItem[]>("/annotate/provenance", {
-                text: segment.text,
-              }),
-        ),
-      );
-      if (provenanceRequestRef.current === requestId) {
-        setAnnotations(provenanceResults);
+  // closure. `model` selects the disambiguation model for A/B testing
+  // ("g2pm" | "g2pw").
+  const runProvenancePass = useCallback(
+    async (sourceText: string, model: "g2pm" | "g2pw" = "g2pm") => {
+      if (!isDevMode()) {
+        return;
       }
-    } catch {
-      // Surface the failure in the dev legend: a silent all-dict
-      // result is indistinguishable from "no conflicts" otherwise.
-      setProvenanceFailed(true);
-    }
-  }, []);
+      const requestId = ++provenanceRequestRef.current;
+      try {
+        const segments = segmentText(sourceText);
+        const provenanceResults = await Promise.all(
+          segments.map((segment) =>
+            segment.blank
+              ? Promise.resolve([])
+              : api.post<AnnotationItem[]>("/annotate/provenance", {
+                  text: segment.text,
+                  model,
+                }),
+          ),
+        );
+        if (provenanceRequestRef.current === requestId) {
+          setAnnotations(provenanceResults);
+        }
+      } catch {
+        // Surface the failure in the dev legend: a silent all-dict
+        // result is indistinguishable from "no conflicts" otherwise.
+        if (provenanceRequestRef.current === requestId) {
+          setProvenanceFailed(true);
+        }
+      }
+    },
+    [],
+  );
+
+  // Dev-only A/B toggle: switch the disambiguation model and re-run the
+  // provenance pass on the current text.
+  const switchAbModel = useCallback(
+    (model: "g2pm" | "g2pw") => {
+      setAbModel(model);
+      setProvenanceFailed(false);
+      const source = lastSourceRef.current;
+      if (source) {
+        void runProvenancePass(source.text, model);
+      }
+    },
+    [runProvenancePass],
+  );
 
   const annotateSource = useCallback(
     async (sourceText: string, nextReaderLabel = "Pasted text") => {
@@ -1100,14 +1123,14 @@ export default function AnnotatorPage() {
         setActivePanel(null);
         lastSourceRef.current = { text: sourceText, label: nextReaderLabel };
 
-        void runProvenancePass(sourceText);
+        void runProvenancePass(sourceText, abModel);
       } catch (error) {
         setErrorMessage(getErrorMessage(error));
       } finally {
         setAnnotating(false);
       }
     },
-    [resetLookupState, runProvenancePass, showToast],
+    [abModel, resetLookupState, runProvenancePass, showToast],
   );
 
   const curatePriority = useCallback(
@@ -1122,6 +1145,7 @@ export default function AnnotatorPage() {
           phrase: phraseText,
           char_index: charIndex,
           suggested_pinyin: suggested,
+          model: abModel,
         });
         showToast(
           result.already
@@ -1135,13 +1159,13 @@ export default function AnnotatorPage() {
         resetLookupState();
         const source = lastSourceRef.current;
         if (source) {
-          await runProvenancePass(source.text);
+          await runProvenancePass(source.text, abModel);
         }
       } catch (error) {
         showToast(getErrorMessage(error), "error");
       }
     },
-    [resetLookupState, runProvenancePass, showToast],
+    [abModel, resetLookupState, runProvenancePass, showToast],
   );
 
   const dismissSuggestion = useCallback(
@@ -1168,13 +1192,13 @@ export default function AnnotatorPage() {
         // Readings didn't change; only the flags need recomputing.
         const source = lastSourceRef.current;
         if (source) {
-          await runProvenancePass(source.text);
+          await runProvenancePass(source.text, abModel);
         }
       } catch (error) {
         showToast(getErrorMessage(error), "error");
       }
     },
-    [resetLookupState, runProvenancePass, showToast],
+    [abModel, resetLookupState, runProvenancePass, showToast],
   );
 
   useEffect(() => {
@@ -1684,8 +1708,25 @@ export default function AnnotatorPage() {
             <span className="font-semibold uppercase tracking-[0.18em] text-slate-500">
               dev · pinyin source
             </span>
+            <span className="flex items-center gap-1">
+              <span className="text-slate-400">model:</span>
+              {(["g2pm", "g2pw"] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => switchAbModel(m)}
+                  className={`rounded-full px-2.5 py-0.5 font-semibold transition ${
+                    abModel === m
+                      ? "bg-slate-700 text-white"
+                      : "border border-slate-300 bg-white text-slate-500 hover:border-slate-400"
+                  }`}
+                >
+                  {m === "g2pw" ? "g2pW" : "g2pM"}
+                </button>
+              ))}
+            </span>
             <span className="underline decoration-emerald-500 decoration-2 underline-offset-4">
-              g2pM override
+              {abModel === "g2pw" ? "g2pW" : "g2pM"} override
             </span>
             <span className="underline decoration-amber-500 decoration-2 underline-offset-4">
               conflict · dictionary kept
@@ -1693,7 +1734,7 @@ export default function AnnotatorPage() {
             <span className="text-slate-400">no underline = dictionary</span>
             {provenanceFailed && (
               <span className="font-semibold text-rose-500">
-                · g2pM provenance unavailable
+                · {abModel === "g2pw" ? "g2pW" : "g2pM"} provenance unavailable
               </span>
             )}
           </div>
@@ -2085,7 +2126,7 @@ export default function AnnotatorPage() {
               activeLookup.fragment.suggested_pinyin ? (
                 <div className="shrink-0 border-b border-amber-200 bg-amber-50 px-4 py-3">
                   <p className="text-sm text-amber-900">
-                    g2pM suggests{" "}
+                    {abModel === "g2pw" ? "g2pW" : "g2pM"} suggests{" "}
                     <span className="font-semibold">
                       {formatPinyin(activeLookup.fragment.suggested_pinyin)}
                     </span>{" "}

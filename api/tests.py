@@ -210,3 +210,111 @@ class PolyphoneConfidenceTest(TestCase):
         pinyins, confidences = polyphone.predict_with_confidence("")
         self.assertIsNone(pinyins)
         self.assertEqual(confidences, {})
+
+
+class PolyphoneG2PWTest(TestCase):
+    """g2pW provider: dispatch, output mapping, and graceful fallback.
+
+    Uses a fake `g2pw` module so no model download is needed.
+    """
+
+    def _install_fake_g2pw(self, outputs=None, fail=False):
+        import sys
+        import types
+        fake = types.ModuleType("g2pw")
+
+        class FakeConverter:
+            init_kwargs = None
+
+            def __init__(self, **kwargs):
+                if fail:
+                    raise RuntimeError("no model")
+                FakeConverter.init_kwargs = kwargs
+
+            def __call__(self, sentences):
+                return outputs
+
+        fake.G2PWConverter = FakeConverter
+        sys.modules["g2pw"] = fake
+        return FakeConverter
+
+    def tearDown(self):
+        import sys
+        import api.polyphone as polyphone
+        sys.modules.pop("g2pw", None)
+        polyphone._g2pw_converter = None
+        polyphone._g2pw_failed = False
+
+    def test_g2pw_predictions_pass_through(self):
+        import api.polyphone as polyphone
+        fake_cls = self._install_fake_g2pw(outputs=[["yin2", "hang2"]])
+        pinyins, confidences = polyphone.predict_with_confidence(
+            "银行", model="g2pw")
+        self.assertEqual(pinyins, ["yin2", "hang2"])
+        self.assertEqual(confidences, {})
+        # Simplified input is converted for the traditional-trained model.
+        self.assertTrue(fake_cls.init_kwargs["enable_non_tradional_chinese"])
+        self.assertEqual(fake_cls.init_kwargs["style"], "pinyin")
+
+    def test_g2pw_none_predictions_echo_characters(self):
+        import api.polyphone as polyphone
+        self._install_fake_g2pw(outputs=[[None, "hang2", "，"]])
+        pinyins, _conf = polyphone.predict_with_confidence(
+            "银行，", model="g2pw")
+        # Unknown chars are echoed so the list stays 1:1; downstream logic
+        # ignores non-pinyin tokens via looks_like_pinyin.
+        self.assertEqual(pinyins, ["银", "hang2", "，"])
+
+    def test_g2pw_length_mismatch_returns_none(self):
+        import api.polyphone as polyphone
+        self._install_fake_g2pw(outputs=[["yin2"]])
+        pinyins, confidences = polyphone.predict_with_confidence(
+            "银行", model="g2pw")
+        self.assertIsNone(pinyins)
+        self.assertEqual(confidences, {})
+
+    def test_g2pw_load_failure_returns_none(self):
+        import api.polyphone as polyphone
+        self._install_fake_g2pw(fail=True)
+        pinyins, confidences = polyphone.predict_with_confidence(
+            "银行", model="g2pw")
+        self.assertIsNone(pinyins)
+        self.assertEqual(confidences, {})
+        self.assertFalse(polyphone.model_available("g2pw"))
+
+    def test_model_available_with_fake_converter(self):
+        import api.polyphone as polyphone
+        self._install_fake_g2pw(outputs=[["yin2", "hang2"]])
+        self.assertTrue(polyphone.model_available("g2pw"))
+
+    def test_active_model_defaults_to_g2pm(self):
+        import api.polyphone as polyphone
+        self.assertEqual(polyphone.active_model(), "g2pm")
+
+    def test_active_model_rejects_unknown_names(self):
+        import sys
+        import types
+        from types import SimpleNamespace
+        import api.polyphone as polyphone
+        old_django = sys.modules.get("django")
+        old_conf = sys.modules.get("django.conf")
+        django = types.ModuleType("django")
+        dconf = types.ModuleType("django.conf")
+        dconf.settings = SimpleNamespace(G2P_MODEL="bert")
+        django.conf = dconf
+        sys.modules["django"] = django
+        sys.modules["django.conf"] = dconf
+        try:
+            self.assertEqual(polyphone.active_model(), "g2pm")
+            dconf.settings.G2P_MODEL = "G2PW"
+            self.assertEqual(polyphone.active_model(), "g2pw")
+        finally:
+            # Restore the surrounding django stub; other tests depend on it.
+            if old_django is not None:
+                sys.modules["django"] = old_django
+            else:
+                sys.modules.pop("django", None)
+            if old_conf is not None:
+                sys.modules["django.conf"] = old_conf
+            else:
+                sys.modules.pop("django.conf", None)

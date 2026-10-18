@@ -304,14 +304,16 @@ class AnnotationView(APIView):
             resolved_chars.append((resolved, source, suggested, confidence))
         return resolved_chars
 
-    def annotate(self, owner: str, text: str, with_provenance=False):
+    def annotate(self, owner: str, text: str, with_provenance=False, model=None):
         """Annotate text with pinyin.
 
-        with_provenance: run the g2pM model to compute per-character pinyin
-            provenance ('dict' | 'g2pm' | 'conflict'). In advisory mode (the
-            default) the model never changes a reading, so the fast path
-            (with_provenance=False) skips it entirely; the frontend calls
-            /annotate/provenance in the background for dev-mode highlighting.
+        with_provenance: run the disambiguation model to compute
+            per-character pinyin provenance ('dict' | 'g2pm' | 'conflict').
+            In advisory mode (the default) the model never changes a reading,
+            so the fast path (with_provenance=False) skips it entirely; the
+            frontend calls /annotate/provenance in the background for
+            dev-mode highlighting.
+        model: "g2pm" or "g2pw"; defaults to polyphone.active_model().
         """
         print("===============================")
         print(text)
@@ -356,7 +358,7 @@ class AnnotationView(APIView):
         poly_confidences = {}
         if run_g2pm:
             poly_pinyins, poly_confidences = polyphone.predict_with_confidence(
-                text)
+                text, model=model)
 
         # fragments concatenate back to text in order; record each
         # fragment's start offset so single-character phrases can look up
@@ -503,23 +505,32 @@ class AnnotationView(APIView):
 
 
 class ProvenanceView(APIView):
-    """Dev-only background pass: re-annotate text with g2pM provenance.
+    """Dev-only background pass: re-annotate text with model provenance.
 
-    The main /annotate endpoint skips g2pM for speed (in advisory mode the
-    model never changes a reading anyway). The frontend calls this endpoint
-    in the background when ?dev=1 is set and swaps the result in to
+    The main /annotate endpoint skips the model for speed (in advisory mode
+    the model never changes a reading anyway). The frontend calls this
+    endpoint in the background when ?dev=1 is set and swaps the result in to
     highlight model/dictionary disagreements.
+
+    POST {text, model?}: model is "g2pm" (default) or "g2pw" for A/B
+    testing the disambiguation models against each other.
     """
     def post(self, request, format=None):
-        text = request.data.get('text', '') if isinstance(request.data, dict) else ''
+        data = request.data if isinstance(request.data, dict) else {}
+        text = data.get('text', '')
         if not isinstance(text, str) or not text.strip():
             return Response([], status=status.HTTP_200_OK)
+        model = data.get('model') or polyphone.active_model()
+        if model not in polyphone.G2P_MODELS:
+            return Response({"detail": "model must be 'g2pm' or 'g2pw'"},
+                            status=status.HTTP_400_BAD_REQUEST)
         # Fail loudly (dev-only endpoint): silently returning all-dict would
         # make missing-model deployments indistinguishable from "no conflicts".
-        if not polyphone.model_available():
-            return Response({"detail": "g2pM model unavailable"},
+        if not polyphone.model_available(model):
+            return Response({"detail": f"{model} model unavailable"},
                             status=status.HTTP_503_SERVICE_UNAVAILABLE)
-        data = AnnotationView().annotate("default", text, with_provenance=True)
+        data = AnnotationView().annotate("default", text, with_provenance=True,
+                                         model=model)
         responseData = [PhraseEntrySerializer(phrase).data if isinstance(phrase, PhraseEntry)
                         else ChineseEntrySerializer(phrase).data for phrase in data]
         return Response(responseData, status=status.HTTP_200_OK)
@@ -572,6 +583,11 @@ class CuratePriorityView(APIView):
         if not polyphone.looks_like_pinyin(suggested):
             return Response({"detail": "suggested_pinyin is not valid pinyin"},
                             status=status.HTTP_400_BAD_REQUEST)
+        model = data.get("model") or polyphone.active_model()
+        if model not in polyphone.G2P_MODELS:
+            return Response({"detail": "model must be 'g2pm' or 'g2pw'"},
+                            status=status.HTTP_400_BAD_REQUEST)
+        model_label = "g2pW" if model == polyphone.G2P_MODEL_G2PW else "g2pM"
 
         entries = EntryManager.get(phrase)
         if not entries:
@@ -601,7 +617,7 @@ class CuratePriorityView(APIView):
                     "simplified": match["simplified"],
                     "pinyin": corrected,
                     "english": match.get("english", ""),
-                    "reason": "g2pM curation",
+                    "reason": f"{model_label} curation",
                 })
                 with open(path, "w") as f:
                     json.dump(rows, f, ensure_ascii=False, indent=2)

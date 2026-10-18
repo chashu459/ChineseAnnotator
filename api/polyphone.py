@@ -153,10 +153,11 @@ def is_dismissed(char, dict_pinyin, suggested_pinyin, prev_char="",
 
 
 def is_enabled():
-    """Whether the g2pM disambiguation step should run.
+    """Whether the polyphone disambiguation step should run at all.
 
-    Controlled by the G2PM_ENABLED Django setting (default True), which itself
-    can be set via the G2PM_ENABLED environment variable.
+    Master kill switch for both models. Controlled by the G2PM_ENABLED
+    Django setting (default True), which itself can be set via the
+    G2PM_ENABLED environment variable.
     """
     try:
         from django.conf import settings
@@ -167,16 +168,39 @@ def is_enabled():
         return True
 
 
-def model_available():
-    """Whether the g2pM model is installed and loadable.
+# Available disambiguation models. "g2pm" is the default lightweight BiLSTM;
+# "g2pw" is the BERT-based alternative (99.08% vs 97.31% on the CPP
+# benchmark) for A/B testing. Selected via the G2P_MODEL Django setting /
+# environment variable, or per-request by the dev-only provenance endpoint.
+G2P_MODEL_G2PM = "g2pm"
+G2P_MODEL_G2PW = "g2pw"
+G2P_MODELS = (G2P_MODEL_G2PM, G2P_MODEL_G2PW)
 
-    Unlike predict_char_pinyins (which silently falls back to None), this is
-    for callers that want to fail loudly, e.g. the dev-only provenance
-    endpoint. The load result is cached, so repeated calls are cheap.
+
+def active_model():
+    """Which disambiguation model to use (default "g2pm")."""
+    try:
+        from django.conf import settings
+        name = str(getattr(settings, "G2P_MODEL", G2P_MODEL_G2PM)).lower()
+    except Exception:
+        name = G2P_MODEL_G2PM
+    return name if name in G2P_MODELS else G2P_MODEL_G2PM
+
+
+def model_available(model=None):
+    """Whether the given model is installed and loadable.
+
+    Unlike predict_with_confidence (which silently falls back to None),
+    this is for callers that want to fail loudly, e.g. the dev-only
+    provenance endpoint. The load result is cached, so repeated calls are
+    cheap. Note: the first g2pW check downloads a ~590MB model file.
     """
     if not is_enabled():
         return False
-    return _get_model() is not None
+    name = model or active_model()
+    if name == G2P_MODEL_G2PW:
+        return get_g2pw_converter() is not None
+    return get_model() is not None
 
 
 def advisory_mode():
@@ -196,7 +220,7 @@ def advisory_mode():
         return True
 
 
-def _get_model():
+def get_model():
     """Lazily load and cache the g2pM model. Returns None if unavailable."""
     global _model, _model_failed
     if _model is not None:
@@ -211,6 +235,82 @@ def _get_model():
         print(f"[polyphone] g2pM unavailable, falling back to priority list: {exc}")
         _model_failed = True
         return None
+
+
+_g2pw_converter = None
+_g2pw_failed = False
+
+
+def _g2pw_model_dir():
+    """Where the g2pW ONNX model lives (downloaded on first use)."""
+    try:
+        from django.conf import settings
+        custom = getattr(settings, "G2PW_MODEL_DIR", None)
+        if custom:
+            return str(custom)
+        return str(settings.BASE_DIR / "data" / "models" / "g2pw")
+    except Exception:
+        import os
+        return os.path.join(os.getcwd(), "G2PWModel")
+
+
+def get_g2pw_converter():
+    """Lazily load and cache the g2pW converter. Returns None if unavailable.
+
+    g2pW (GitYCC/g2pW, Apache-2.0) is a BERT-based Mandarin G2P model served
+    via ONNX -- no torch needed for inference, but the g2pw package imports
+    torch at module level, so a torch install (CPU-only is fine) is still
+    required. The ~590MB ONNX model downloads automatically on first use.
+    enable_non_tradional_chinese converts simplified input to traditional
+    for the model (it was trained on traditional text); the conversion is
+    1:1 so output alignment is preserved.
+    """
+    global _g2pw_converter, _g2pw_failed
+    if _g2pw_converter is not None:
+        return _g2pw_converter
+    if _g2pw_failed:
+        return None
+    try:
+        from g2pw import G2PWConverter
+        print("[polyphone] loading g2pW (first use downloads ~590MB model)...")
+        _g2pw_converter = G2PWConverter(
+            model_dir=_g2pw_model_dir(),
+            style="pinyin",
+            enable_non_tradional_chinese=True,
+        )
+        return _g2pw_converter
+    except Exception as exc:
+        print(f"[polyphone] g2pW unavailable: {exc}")
+        _g2pw_failed = True
+        return None
+
+
+def _predict_g2pw(text):
+    """Run g2pW over the text.
+
+    Returns (pinyins, confidences) like predict_with_confidence: one ASCII
+    pinyin per character of `text` (characters g2pW has no reading for are
+    echoed back, so the list aligns 1:1 and downstream logic ignores them
+    via looks_like_pinyin), or (None, {}) when g2pW is unavailable or the
+    output doesn't line up. Confidences are always {} -- g2pW computes them
+    internally but its public API discards them.
+    """
+    converter = get_g2pw_converter()
+    if converter is None:
+        return None, {}
+    try:
+        results = converter([text])
+    except Exception as exc:
+        print(f"[polyphone] g2pW prediction failed: {exc}")
+        return None, {}
+    if (not results or not isinstance(results[0], list)
+            or len(results[0]) != len(text)):
+        print("[polyphone] g2pW output length mismatch")
+        return None, {}
+    pinyins = [pred if isinstance(pred, str) and looks_like_pinyin(pred)
+               else ch
+               for ch, pred in zip(text, results[0])]
+    return pinyins, {}
 
 
 def _forward_with_confidence(model, text):
@@ -281,27 +381,31 @@ def _forward_with_confidence(model, text):
     return pros, confidences
 
 
-def predict_with_confidence(text):
-    """Run g2pM over the full text, with per-character confidence.
+def predict_with_confidence(text, model=None):
+    """Run the active disambiguation model over the full text.
 
     Args:
         text: the raw input string passed to AnnotationView.annotate.
+        model: "g2pm" or "g2pw"; defaults to active_model().
 
     Returns:
         (pinyins, confidences): pinyins is a list with one ASCII pinyin
         (e.g. 'hong2') per character of `text` (1:1 alignment, non-Chinese
-        echoed), or None when g2pM is disabled/unavailable or the output
-        doesn't line up with the input; confidences maps 0-based character
-        positions of polyphonic characters to the model's softmax confidence
-        (0..1), {} when pinyins is None.
+        echoed), or None when the model is disabled/unavailable or the
+        output doesn't line up with the input; confidences maps 0-based
+        character positions to the model's softmax confidence (0..1), {}
+        when pinyins is None (g2pW never reports confidences).
     """
     if not text or not is_enabled():
         return None, {}
-    model = _get_model()
-    if model is None:
+    name = model or active_model()
+    if name == G2P_MODEL_G2PW:
+        return _predict_g2pw(text)
+    model_obj = get_model()
+    if model_obj is None:
         return None, {}
     try:
-        pinyins, confidences = _forward_with_confidence(model, text)
+        pinyins, confidences = _forward_with_confidence(model_obj, text)
     except Exception as exc:
         print(f"[polyphone] g2pM prediction failed, falling back: {exc}")
         return None, {}
