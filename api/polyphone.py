@@ -186,11 +186,16 @@ def is_enabled():
 
 # Available disambiguation models. "g2pm" is the default lightweight BiLSTM;
 # "g2pw" is the BERT-based alternative (99.08% vs 97.31% on the CPP
-# benchmark) for A/B testing. Selected via the G2P_MODEL Django setting /
-# environment variable, or per-request by the dev-only provenance endpoint.
+# benchmark) for A/B testing. "g2pc" is a user fine-tuned g2pM: the same
+# BiLSTM architecture, but with custom weights loaded from G2PC_CKPT_PATH
+# (default data/models/g2pc/np_ckpt.pkl) -- the numpy checkpoint format the
+# g2pM package itself uses (see G2pM.load_variable). Selected via the
+# G2P_MODEL Django setting / environment variable, or per-request by the
+# dev-only provenance endpoint.
 G2P_MODEL_G2PM = "g2pm"
 G2P_MODEL_G2PW = "g2pw"
-G2P_MODELS = (G2P_MODEL_G2PM, G2P_MODEL_G2PW)
+G2P_MODEL_G2PC = "g2pc"
+G2P_MODELS = (G2P_MODEL_G2PM, G2P_MODEL_G2PW, G2P_MODEL_G2PC)
 
 
 def active_model():
@@ -218,6 +223,8 @@ def model_available(model=None):
     name = model or active_model()
     if name == G2P_MODEL_G2PW:
         return get_g2pw_converter() is not None
+    if name == G2P_MODEL_G2PC:
+        return get_g2pc_model() is not None
     return get_model() is not None
 
 
@@ -253,6 +260,64 @@ def get_model():
         print(f"[polyphone] g2pM unavailable, falling back to priority list: {exc}")
         _model_failed = True
         return None
+
+
+_g2pc_model = None
+_g2pc_failed = False
+
+
+def _g2pc_ckpt_path():
+    """Filesystem path of the user's fine-tuned g2pM checkpoint."""
+    try:
+        from django.conf import settings
+        custom = getattr(settings, "G2PC_CKPT_PATH", None)
+        if custom:
+            return str(custom)
+        return str(settings.BASE_DIR / "data" / "models" / "g2pc" / "np_ckpt.pkl")
+    except Exception:
+        import os
+        return os.path.join(os.getcwd(), "data", "models", "g2pc", "np_ckpt.pkl")
+
+
+def get_g2pc_model():
+    """Lazily load the user's fine-tuned g2pM weights. Returns None when the
+    checkpoint file doesn't exist (yet) or fails to load.
+
+    The checkpoint is the numpy pickle format g2pM itself uses: a dict with
+    keys like "embedding.weight", "lstm.weight_ih_l0", "logit_layer.0.weight"
+    (see G2pM.load_variable). A missing file is *not* cached as a failure,
+    so dropping the weights in later is picked up without a restart; a
+    corrupt file is cached as failed.
+    """
+    global _g2pc_model, _g2pc_failed
+    if _g2pc_model is not None:
+        return _g2pc_model
+    if _g2pc_failed:
+        return None
+    import os
+    ckpt_path = _g2pc_ckpt_path()
+    if not os.path.exists(ckpt_path):
+        return None
+    try:
+        import pickle
+        from g2pM import G2pM
+        with open(ckpt_path, "rb") as f:
+            state_dict = pickle.load(f)
+        _g2pc_model = G2pM()
+        _g2pc_model.load_variable(state_dict)
+        print(f"[polyphone] g2pC loaded from {ckpt_path}")
+        return _g2pc_model
+    except Exception as exc:
+        print(f"[polyphone] g2pC unavailable, falling back to priority list: {exc}")
+        _g2pc_failed = True
+        return None
+
+
+def clear_g2pc_cache():
+    """Forget the cached g2pC model (e.g. after replacing the checkpoint)."""
+    global _g2pc_model, _g2pc_failed
+    _g2pc_model = None
+    _g2pc_failed = False
 
 
 _g2pw_converter = None
@@ -448,7 +513,7 @@ def predict_with_confidence(text, model=None):
 
     Args:
         text: the raw input string passed to AnnotationView.annotate.
-        model: "g2pm" or "g2pw"; defaults to active_model().
+        model: "g2pm", "g2pw", or "g2pc"; defaults to active_model().
 
     Returns:
         (pinyins, confidences): pinyins is a list with one ASCII pinyin
@@ -463,7 +528,10 @@ def predict_with_confidence(text, model=None):
     name = model or active_model()
     if name == G2P_MODEL_G2PW:
         return _predict_g2pw(text)
-    model_obj = get_model()
+    if name == G2P_MODEL_G2PC:
+        model_obj = get_g2pc_model()
+    else:
+        model_obj = get_model()
     if model_obj is None:
         return None, {}
     try:
