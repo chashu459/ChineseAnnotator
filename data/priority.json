@@ -670,5 +670,47 @@
     "pinyin": "wei4",
     "english": "because of/for/to",
     "reason": "g2pW curation"
+  },
+  {
+    "traditional": "強",
+    "simplified": "强",
+    "pinyin": "qiang2",
+    "english": "strong/powerful/better/slightly more than/vigorous/violent/best in their category, e.g. see 百強|百强[bai3 qiang2]",
+    "reason": "g2pM curation"
+  },
+  {
+    "traditional": "沖",
+    "simplified": "冲",
+    "pinyin": "chong1",
+    "english": "(of water) to dash against/to mix with water/to infuse/to rinse/to flush/to develop (a film)/to rise in the air/to clash/to collide with",
+    "reason": "g2pM curation"
+  },
+  {
+    "traditional": "覺",
+    "simplified": "觉",
+    "pinyin": "jue2",
+    "english": "to feel/to find that/thinking/awake/aware",
+    "reason": "g2pM curation"
+  },
+  {
+    "traditional": "重點",
+    "simplified": "重点",
+    "pinyin": "zhong4 dian3",
+    "english": "important point; main point; focus/key (project etc)/to focus on; to put the emphasis on",
+    "reason": "g2pM curation"
+  },
+  {
+    "traditional": "啊",
+    "simplified": "啊",
+    "pinyin": "a5",
+    "english": "modal particle ending sentence, showing affirmation, approval, or consent",
+    "reason": "g2pM curation"
+  },
+  {
+    "traditional": "得",
+    "simplified": "得",
+    "pinyin": "de5",
+    "english": "structural particle: used after a verb (or adjective as main verb), linking it to following phrase indicating effect, degree, possibility etc",
+    "reason": "g2pW curation"
   }
 ]
