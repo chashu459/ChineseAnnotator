@@ -58,7 +58,25 @@ type LookupTarget = {
   fragment: Fragment;
   phrase: PhraseContext | null;
   phraseIndex: number | null;
+  // Paragraph location, for training-data logging: paragraphIndex selects the
+  // segment, absoluteIndex is the fragment's character offset within it.
+  paragraphIndex: number | null;
+  absoluteIndex: number | null;
 };
+
+// A/B testable disambiguation models: g2pM (stock), g2pW (BERT), g2pC (the
+// user's own fine-tuned g2pM weights), llm (Ollama-based adjudicator).
+type AbModel = "g2pm" | "g2pw" | "g2pc" | "llm";
+
+function modelLabel(m: AbModel): string {
+  return m === "g2pw"
+    ? "g2pW"
+    : m === "g2pc"
+      ? "g2pC"
+      : m === "llm"
+        ? "LLM"
+        : "g2pM";
+}
 
 function segmentText(text: string) {
   const lines = text.split("\n");
@@ -646,13 +664,7 @@ export default function AnnotatorPage() {
   const [provenanceProvisioning, setProvenanceProvisioning] =
     useState<boolean>(false);
   // Dev-only A/B: which disambiguation model the provenance pass runs.
-  type AbModel = "g2pm" | "g2pw" | "llm";
   const [abModel, setAbModel] = useState<AbModel>("g2pm");
-  const MODEL_LABELS: Record<AbModel, string> = {
-    g2pm: "g2pM",
-    g2pw: "g2pW",
-    llm: "LLM",
-  };
   useEffect(() => {
     setDevMode(isDevMode());
   }, []);
@@ -959,7 +971,13 @@ export default function AnnotatorPage() {
     });
   }
 
-  function handleFragmentPointerUp(fragment: Fragment, phrase: PhraseContext | null, phraseIndex: number | null = null) {
+  function handleFragmentPointerUp(
+    fragment: Fragment,
+    phrase: PhraseContext | null,
+    phraseIndex: number | null = null,
+    paragraphIndex: number | null = null,
+    absoluteIndex: number | null = null,
+  ) {
     clearLongPressTimeout();
 
     if (!dragSelectActiveRef.current) {
@@ -991,7 +1009,7 @@ export default function AnnotatorPage() {
         }, 0);
       } else {
         // Single fragment — fall through to normal long-press lookup.
-        setTimeout(() => void inspectLookup(fragment, phrase, phraseIndex), 0);
+        setTimeout(() => void inspectLookup(fragment, phrase, phraseIndex, paragraphIndex, absoluteIndex), 0);
       }
 
       return fragments;
@@ -1075,7 +1093,7 @@ export default function AnnotatorPage() {
   // top of the fast pass; a stale response must never overwrite a newer
   // annotation. isDevMode() is read live so this never depends on a stale
   // closure. `model` selects the disambiguation model for A/B testing
-  // ("g2pm" | "g2pw" | "llm").
+  // (AbModel).
   const runProvenancePass = useCallback(
     async (sourceText: string, model: AbModel = "g2pm") => {
       if (!isDevMode()) {
@@ -1215,8 +1233,50 @@ export default function AnnotatorPage() {
     [abModel, resetLookupState, runProvenancePass, showToast],
   );
 
+  // Training-data logging: the paragraph text the model saw plus the judged
+  // character's offset within it. The backend validates
+  // context[contextIndex] === fragment.cchar and skips misaligned rows, so
+  // this returns null unless the paragraph reconstructs cleanly.
+  function getTrainingContext(): {
+    context: string;
+    contextIndex: number;
+  } | null {
+    const lookup = activeLookup;
+    if (
+      !lookup ||
+      lookup.paragraphIndex == null ||
+      lookup.absoluteIndex == null
+    ) {
+      return null;
+    }
+    const source = lastSourceRef.current;
+    if (!source) {
+      return null;
+    }
+    const segments = segmentText(source.text);
+    const segment = segments[lookup.paragraphIndex];
+    if (!segment || segment.blank) {
+      return null;
+    }
+    const context = segment.text;
+    const contextIndex = lookup.absoluteIndex;
+    if (contextIndex < 0 || contextIndex >= context.length) {
+      return null;
+    }
+    if (context[contextIndex] !== lookup.fragment.cchar) {
+      return null;
+    }
+    return { context, contextIndex };
+  }
+
   const curatePriority = useCallback(
-    async (phraseText: string, charIndex: number, suggested: string) => {
+    async (
+      phraseText: string,
+      charIndex: number,
+      suggested: string,
+      context: string | null,
+      contextIndex: number | null,
+    ) => {
       try {
         const result = await api.post<{
           ok: boolean;
@@ -1228,6 +1288,10 @@ export default function AnnotatorPage() {
           char_index: charIndex,
           suggested_pinyin: suggested,
           model: abModel,
+          // Training-data logging: paragraph context for g2pM fine-tuning.
+          ...(context !== null && contextIndex !== null
+            ? { context, context_index: contextIndex }
+            : {}),
         });
         showToast(
           result.already
@@ -1257,6 +1321,8 @@ export default function AnnotatorPage() {
       suggested: string,
       prevChar: string,
       nextChar: string,
+      context: string | null,
+      contextIndex: number | null,
     ) => {
       try {
         await api.post("/annotate/dismiss", {
@@ -1265,6 +1331,11 @@ export default function AnnotatorPage() {
           suggested_pinyin: suggested,
           prev_char: prevChar,
           next_char: nextChar,
+          model: abModel,
+          // Training-data logging: paragraph context for g2pM fine-tuning.
+          ...(context !== null && contextIndex !== null
+            ? { context, context_index: contextIndex }
+            : {}),
         });
         showToast(
           "Marked as wrong — won't flag it in this context again.",
@@ -1329,9 +1400,15 @@ export default function AnnotatorPage() {
     }
   }
 
-  async function inspectLookup(fragment: Fragment, phrase: PhraseContext | null, phraseIndex: number | null = null) {
+  async function inspectLookup(
+    fragment: Fragment,
+    phrase: PhraseContext | null,
+    phraseIndex: number | null = null,
+    paragraphIndex: number | null = null,
+    absoluteIndex: number | null = null,
+  ) {
     setActivePanel(null);
-    setActiveLookup({ fragment, phrase, phraseIndex });
+    setActiveLookup({ fragment, phrase, phraseIndex, paragraphIndex, absoluteIndex });
     setFragmentLookupEntries([]);
     setPhraseLookupEntries([]);
     setLoadingLookup(true);
@@ -1440,18 +1517,24 @@ export default function AnnotatorPage() {
     setSelectedFragments(nextSelection);
   }
 
-  function handleFragmentPress(fragment: Fragment, phrase: PhraseContext | null, phraseIndex: number | null = null) {
+  function handleFragmentPress(
+    fragment: Fragment,
+    phrase: PhraseContext | null,
+    phraseIndex: number | null = null,
+    paragraphIndex: number | null = null,
+    absoluteIndex: number | null = null,
+  ) {
     // Dev mode: a single tap always opens the lookup panel (for curation)
     // instead of toggling pinyin visibility.
     if (isDevMode()) {
-      void inspectLookup(fragment, phrase, phraseIndex);
+      void inspectLookup(fragment, phrase, phraseIndex, paragraphIndex, absoluteIndex);
       return;
     }
 
     // When the split-screen is open, use splitTapMode to decide behaviour.
     if (activeLookup !== null) {
       if (splitTapMode === 'lookup') {
-        void inspectLookup(fragment, phrase, phraseIndex);
+        void inspectLookup(fragment, phrase, phraseIndex, paragraphIndex, absoluteIndex);
       } else {
         toggleFragments([fragment]);
       }
@@ -1463,7 +1546,7 @@ export default function AnnotatorPage() {
       return;
     }
 
-    void inspectLookup(fragment, phrase, phraseIndex);
+    void inspectLookup(fragment, phrase, phraseIndex, paragraphIndex, absoluteIndex);
   }
 
   function handlePhrasePress(item: PhraseAnnotation) {
@@ -1564,10 +1647,14 @@ export default function AnnotatorPage() {
       inPhrase = false,
       phrase = null,
       phraseIndex,
+      paragraphIndex = null,
+      absoluteIndex = null,
     }: {
       inPhrase?: boolean;
       phrase?: PhraseContext | null;
       phraseIndex?: number;
+      paragraphIndex?: number | null;
+      absoluteIndex?: number | null;
     } = {},
   ) {
     const selected = selectedKeys.has(fragmentKey(fragment));
@@ -1615,7 +1702,7 @@ export default function AnnotatorPage() {
         data-fragment-pinyin={fragment.pinyin}
         data-pinyin-source={pinyinSource}
         onPointerDown={() => beginLongPress(fragment, phrase, phraseIndex ?? null)}
-        onPointerUp={() => handleFragmentPointerUp(fragment, phrase, phraseIndex ?? null)}
+        onPointerUp={() => handleFragmentPointerUp(fragment, phrase, phraseIndex ?? null, paragraphIndex, absoluteIndex)}
         onPointerMove={handleFragmentPointerMove}
         onPointerLeave={handleFragmentPointerLeave}
         onPointerCancel={handleFragmentPointerCancel}
@@ -1630,7 +1717,7 @@ export default function AnnotatorPage() {
             return;
           }
 
-          handleFragmentPress(fragment, phrase, phraseIndex ?? null);
+          handleFragmentPress(fragment, phrase, phraseIndex ?? null, paragraphIndex, absoluteIndex);
         }}
         className={`flex min-w-[1.35em] flex-col items-center bg-transparent px-0 py-0 text-center transition ${fragmentToneClass} ${
           highlighted ? "rounded-md bg-sky-100/70 text-sky-900" : ""
@@ -1656,14 +1743,32 @@ export default function AnnotatorPage() {
     );
   }
 
-  function renderAnnotationItem(item: AnnotationItem, index: number) {
+  // Character offset of the item at `index` within paragraph
+  // `paragraphIndex`, for training-data logging. The backend consumes the
+  // segment text sequentially, so walking the annotations reconstructs the
+  // model's input 1:1.
+  function paragraphCharOffset(paragraphIndex: number, index: number): number {
+    const items = annotations[paragraphIndex] ?? [];
+    let offset = 0;
+    for (let i = 0; i < index && i < items.length; i++) {
+      const prev = items[i];
+      offset += isPhraseAnnotation(prev) ? prev.cchars.length : prev.cchar.length;
+    }
+    return offset;
+  }
+
+  function renderAnnotationItem(item: AnnotationItem, index: number, paragraphIndex: number) {
     if (!isPhraseAnnotation(item)) {
-      return renderFragment(item, `fragment-${index}`);
+      return renderFragment(item, `fragment-${index}`, {
+        paragraphIndex,
+        absoluteIndex: paragraphCharOffset(paragraphIndex, index),
+      });
     }
 
     const phrase = buildPhraseContext(item);
     const selectableFragments = item.cchars.filter(isSelectableFragment);
     const phraseSelected = activeLookup?.phrase?.key === phrase?.key;
+    const baseOffset = paragraphCharOffset(paragraphIndex, index);
 
     if (viewMode === "reader") {
       return (
@@ -1696,6 +1801,8 @@ export default function AnnotatorPage() {
               inPhrase: true,
               phrase,
               phraseIndex: fragmentIndex,
+              paragraphIndex,
+              absoluteIndex: baseOffset + fragmentIndex,
             }),
           )}
         </div>
@@ -1714,7 +1821,8 @@ export default function AnnotatorPage() {
           if (fragment) {
             // Phrase taps open the phrase-level context while defaulting the
             // fragment detail to the first selectable character.
-            handleFragmentPress(fragment, phrase, item.cchars.indexOf(fragment));
+            handleFragmentPress(fragment, phrase, item.cchars.indexOf(fragment),
+              paragraphIndex, baseOffset + item.cchars.indexOf(fragment));
           }
         }}
         onKeyDown={(event) => {
@@ -1726,7 +1834,8 @@ export default function AnnotatorPage() {
             const fragment = selectableFragments[0];
 
             if (fragment) {
-              handleFragmentPress(fragment, phrase, item.cchars.indexOf(fragment));
+              handleFragmentPress(fragment, phrase, item.cchars.indexOf(fragment),
+                paragraphIndex, baseOffset + item.cchars.indexOf(fragment));
             }
           }
         }}
@@ -1742,6 +1851,8 @@ export default function AnnotatorPage() {
             inPhrase: true,
             phrase,
             phraseIndex: fragmentIndex,
+            paragraphIndex,
+            absoluteIndex: baseOffset + fragmentIndex,
           }),
         )}
       </div>
@@ -1792,7 +1903,7 @@ export default function AnnotatorPage() {
             </span>
             <span className="flex items-center gap-1">
               <span className="text-slate-400">model:</span>
-              {(["g2pm", "g2pw", "llm"] as const).map((m) => (
+              {(["g2pm", "g2pw", "g2pc", "llm"] as const).map((m) => (
                 <button
                   key={m}
                   type="button"
@@ -1803,12 +1914,12 @@ export default function AnnotatorPage() {
                       : "border border-slate-300 bg-white text-slate-500 hover:border-slate-400"
                   }`}
                 >
-                  {MODEL_LABELS[m]}
+                  {modelLabel(m)}
                 </button>
               ))}
             </span>
             <span className="underline decoration-emerald-500 decoration-2 underline-offset-4">
-              {MODEL_LABELS[abModel]} override
+              {modelLabel(abModel)} override
             </span>
             <span className="underline decoration-amber-500 decoration-2 underline-offset-4">
               conflict · dictionary kept
@@ -1822,7 +1933,7 @@ export default function AnnotatorPage() {
             {provenanceRunning && !provenanceProvisioning && (
               <span className="flex items-center gap-1 font-semibold text-slate-500">
                 <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-slate-300 border-t-slate-600" />
-                running {MODEL_LABELS[abModel]}…
+                running {modelLabel(abModel)}…
               </span>
             )}
             {provenanceProvisioning && (
@@ -1833,7 +1944,7 @@ export default function AnnotatorPage() {
             )}
             {provenanceFailed && (
               <span className="font-semibold text-rose-500">
-                · {MODEL_LABELS[abModel]} provenance unavailable
+                · {modelLabel(abModel)} provenance unavailable
               </span>
             )}
           </div>
@@ -1905,7 +2016,7 @@ export default function AnnotatorPage() {
                   ) : (
                     <div className="flex flex-wrap items-end gap-x-0 gap-y-2 leading-[3.4rem]">
                       {paragraph.map((item, index) =>
-                        renderAnnotationItem(item, index),
+                        renderAnnotationItem(item, index, paragraphIndex),
                       )}
                     </div>
                   )}
@@ -2225,7 +2336,7 @@ export default function AnnotatorPage() {
               activeLookup.fragment.suggested_pinyin ? (
                 <div className="shrink-0 border-b border-amber-200 bg-amber-50 px-4 py-3">
                   <p className="text-sm text-amber-900">
-                    {MODEL_LABELS[abModel]} suggests{" "}
+                    {modelLabel(abModel)} suggests{" "}
                     <span className="font-semibold">
                       {formatPinyin(activeLookup.fragment.suggested_pinyin)}
                     </span>{" "}
@@ -2234,14 +2345,17 @@ export default function AnnotatorPage() {
                   <div className="mt-2 flex gap-2">
                     <button
                       type="button"
-                      onClick={() =>
+                      onClick={() => {
+                        const training = getTrainingContext();
                         void curatePriority(
                           activeLookup.phrase?.text ??
                             activeLookup.fragment.cchar,
                           activeLookup.phraseIndex ?? 0,
                           activeLookup.fragment.suggested_pinyin ?? "",
-                        )
-                      }
+                          training?.context ?? null,
+                          training?.contextIndex ?? null,
+                        );
+                      }}
                       className="rounded-full bg-emerald-600 px-4 py-1.5 text-sm font-semibold text-white transition active:bg-emerald-700"
                     >
                       ✓ Use this reading
@@ -2256,6 +2370,7 @@ export default function AnnotatorPage() {
                           activeLookup.phrase?.text ??
                           activeLookup.fragment.cchar;
                         const pIdx = activeLookup.phraseIndex ?? 0;
+                        const training = getTrainingContext();
                         void dismissSuggestion(
                           activeLookup.fragment.cchar,
                           activeLookup.fragment.pinyin,
@@ -2264,6 +2379,8 @@ export default function AnnotatorPage() {
                           pIdx < phraseText.length - 1
                             ? phraseText[pIdx + 1]
                             : "",
+                          training?.context ?? null,
+                          training?.contextIndex ?? null,
                         );
                       }}
                       className="rounded-full bg-red-600 px-4 py-1.5 text-sm font-semibold text-white transition active:bg-red-700"
