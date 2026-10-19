@@ -2,6 +2,7 @@ import json
 import os
 import re
 from collections import namedtuple
+from datetime import datetime, timezone
 from pprint import pprint
 import timeit
 
@@ -557,6 +558,52 @@ def _data_path(filename):
     return os.path.join(str(settings.BASE_DIR / "data"), filename)
 
 
+def _log_training_example(context, context_index, char, pinyin, label, model):
+    """Append a labeled example for g2pM fine-tuning to data/g2pm_training.jsonl.
+
+    context: the paragraph text the model saw; context_index: the judged
+    character's offset within it; pinyin: the correct reading (ASCII, e.g.
+    'de5'); label: 'accept' (user confirmed the suggestion) or 'dismiss'
+    (user rejected it, keeping the dictionary reading); model: 'g2pm'/'g2pw'.
+
+    Logging must never break curation: invalid input is skipped silently and
+    unexpected errors are printed, not raised.
+    """
+    try:
+        if not isinstance(context, str) or not context:
+            return
+        try:
+            idx = int(context_index)
+        except (TypeError, ValueError):
+            return
+        if not (0 <= idx < len(context)):
+            return
+        if not isinstance(char, str) or len(char) != 1:
+            return
+        if context[idx] != char:
+            # Misaligned -- do not record a wrong example.
+            return
+        pinyin = polyphone.unparse_pinyin(pinyin)
+        if not polyphone.looks_like_pinyin(pinyin):
+            return
+        if label not in ("accept", "dismiss"):
+            return
+        path = _data_path("g2pm_training.jsonl")
+        row = {
+            "text": context,
+            "index": idx,
+            "char": char,
+            "pinyin": pinyin,
+            "label": label,
+            "model": model,
+            "ts": datetime.now(timezone.utc).isoformat(),
+        }
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        print(f"[training] log failed: {exc}")
+
+
 class CuratePriorityView(APIView):
     """One-tap curation: make g2pM's suggested reading win for a phrase.
 
@@ -644,6 +691,9 @@ class CuratePriorityView(APIView):
                     json.dump(rows, f, ensure_ascii=False, indent=2)
                 setupPriorityEntries()
                 EntryManager.reloadPriorities()
+            _log_training_example(data.get("context"), data.get("context_index"),
+                                  phrase[char_index], suggested,
+                                  "accept", model)
             return Response({"ok": True, "via": "priority",
                              "pinyin": corrected, "already": not changed},
                             status=status.HTTP_200_OK)
@@ -664,6 +714,9 @@ class CuratePriorityView(APIView):
                 json.dump(rows, f, ensure_ascii=False, indent=2)
             setupCustomEntries()
             EntryManager.reloadCustoms()
+        _log_training_example(data.get("context"), data.get("context_index"),
+                              phrase[char_index], suggested,
+                              "accept", model)
         return Response({"ok": True, "via": "custom",
                          "pinyin": corrected, "already": done},
                         status=status.HTTP_200_OK)
@@ -785,6 +838,11 @@ class DismissSuggestionView(APIView):
             with open(path, "w") as f:
                 json.dump(rows, f, ensure_ascii=False, indent=2)
         polyphone.clear_dismissed_cache()
+        # The user judged the dictionary reading correct here: log it as a
+        # training example (label 'dismiss', pinyin = the kept reading).
+        _log_training_example(data.get("context"), data.get("context_index"),
+                              char.strip(), dict_pinyin,
+                              "dismiss", data.get("model") or "g2pm")
         return Response({"ok": True, "already": done},
                         status=status.HTTP_200_OK)
 
