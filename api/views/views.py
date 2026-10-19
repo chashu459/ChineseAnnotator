@@ -523,7 +523,7 @@ class ProvenanceView(APIView):
             return Response([], status=status.HTTP_200_OK)
         model = data.get('model') or polyphone.active_model()
         if model not in polyphone.G2P_MODELS:
-            return Response({"detail": "model must be 'g2pm' or 'g2pw'"},
+            return Response({"detail": "model must be 'g2pm', 'g2pw' or 'g2pc'"},
                             status=status.HTTP_400_BAD_REQUEST)
         # Fail loudly (dev-only endpoint): silently returning all-dict would
         # make missing-model deployments indistinguishable from "no conflicts".
@@ -639,9 +639,11 @@ class CuratePriorityView(APIView):
                             status=status.HTTP_400_BAD_REQUEST)
         model = data.get("model") or polyphone.active_model()
         if model not in polyphone.G2P_MODELS:
-            return Response({"detail": "model must be 'g2pm' or 'g2pw'"},
+            return Response({"detail": "model must be 'g2pm', 'g2pw' or 'g2pc'"},
                             status=status.HTTP_400_BAD_REQUEST)
-        model_label = "g2pW" if model == polyphone.G2P_MODEL_G2PW else "g2pM"
+        model_label = ("g2pW" if model == polyphone.G2P_MODEL_G2PW
+                       else "g2pC" if model == polyphone.G2P_MODEL_G2PC
+                       else "g2pM")
 
         entries = EntryManager.get(phrase)
         if not entries:

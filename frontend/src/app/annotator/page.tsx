@@ -64,6 +64,14 @@ type LookupTarget = {
   absoluteIndex: number | null;
 };
 
+// A/B testable disambiguation models: g2pM (stock), g2pW (BERT), g2pC (the
+// user's own fine-tuned g2pM weights).
+type AbModel = "g2pm" | "g2pw" | "g2pc";
+
+function modelLabel(m: AbModel): string {
+  return m === "g2pw" ? "g2pW" : m === "g2pc" ? "g2pC" : "g2pM";
+}
+
 function segmentText(text: string) {
   const lines = text.split("\n");
 
@@ -650,7 +658,7 @@ export default function AnnotatorPage() {
   const [provenanceProvisioning, setProvenanceProvisioning] =
     useState<boolean>(false);
   // Dev-only A/B: which disambiguation model the provenance pass runs.
-  const [abModel, setAbModel] = useState<"g2pm" | "g2pw">("g2pm");
+  const [abModel, setAbModel] = useState<AbModel>("g2pm");
   useEffect(() => {
     setDevMode(isDevMode());
   }, []);
@@ -1079,9 +1087,9 @@ export default function AnnotatorPage() {
   // top of the fast pass; a stale response must never overwrite a newer
   // annotation. isDevMode() is read live so this never depends on a stale
   // closure. `model` selects the disambiguation model for A/B testing
-  // ("g2pm" | "g2pw").
+  // (AbModel).
   const runProvenancePass = useCallback(
-    async (sourceText: string, model: "g2pm" | "g2pw" = "g2pm") => {
+    async (sourceText: string, model: AbModel = "g2pm") => {
       if (!isDevMode()) {
         return;
       }
@@ -1163,7 +1171,7 @@ export default function AnnotatorPage() {
   // Dev-only A/B toggle: switch the disambiguation model and re-run the
   // provenance pass on the current text.
   const switchAbModel = useCallback(
-    (model: "g2pm" | "g2pw") => {
+    (model: AbModel) => {
       setAbModel(model);
       setProvenanceFailed(false);
       setProvenanceProvisioning(false);
@@ -1889,7 +1897,7 @@ export default function AnnotatorPage() {
             </span>
             <span className="flex items-center gap-1">
               <span className="text-slate-400">model:</span>
-              {(["g2pm", "g2pw"] as const).map((m) => (
+              {(["g2pm", "g2pw", "g2pc"] as const).map((m) => (
                 <button
                   key={m}
                   type="button"
@@ -1900,12 +1908,12 @@ export default function AnnotatorPage() {
                       : "border border-slate-300 bg-white text-slate-500 hover:border-slate-400"
                   }`}
                 >
-                  {m === "g2pw" ? "g2pW" : "g2pM"}
+                  {modelLabel(m)}
                 </button>
               ))}
             </span>
             <span className="underline decoration-emerald-500 decoration-2 underline-offset-4">
-              {abModel === "g2pw" ? "g2pW" : "g2pM"} override
+              {modelLabel(abModel)} override
             </span>
             <span className="underline decoration-amber-500 decoration-2 underline-offset-4">
               conflict · dictionary kept
@@ -1919,7 +1927,7 @@ export default function AnnotatorPage() {
             {provenanceRunning && !provenanceProvisioning && (
               <span className="flex items-center gap-1 font-semibold text-slate-500">
                 <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-slate-300 border-t-slate-600" />
-                running {abModel === "g2pw" ? "g2pW" : "g2pM"}…
+                running {modelLabel(abModel)}…
               </span>
             )}
             {provenanceProvisioning && (
@@ -1930,7 +1938,7 @@ export default function AnnotatorPage() {
             )}
             {provenanceFailed && (
               <span className="font-semibold text-rose-500">
-                · {abModel === "g2pw" ? "g2pW" : "g2pM"} provenance unavailable
+                · {modelLabel(abModel)} provenance unavailable
               </span>
             )}
           </div>
@@ -2322,7 +2330,7 @@ export default function AnnotatorPage() {
               activeLookup.fragment.suggested_pinyin ? (
                 <div className="shrink-0 border-b border-amber-200 bg-amber-50 px-4 py-3">
                   <p className="text-sm text-amber-900">
-                    {abModel === "g2pw" ? "g2pW" : "g2pM"} suggests{" "}
+                    {modelLabel(abModel)} suggests{" "}
                     <span className="font-semibold">
                       {formatPinyin(activeLookup.fragment.suggested_pinyin)}
                     </span>{" "}
