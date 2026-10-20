@@ -1,3 +1,4 @@
+import functools
 import json
 import os
 import re
@@ -297,14 +298,24 @@ def isChinese(char):
     return re.search(REGEX_CHINESE, char)
 
 
+_VOWELS = None
+
+
+def _vowels():
+    """Load data/vowels.json once (parsePinyin used to reopen it per call)."""
+    global _VOWELS
+    if _VOWELS is None:
+        with open(os.path.join(DATA_DIR, 'vowels.json')) as f:
+            _VOWELS = json.load(f)
+    return _VOWELS
+
+
 # Parses pinyin from ascii to utf-8
 #  i.e. from 'san1' into 'sān'
 # @param {*} pinyin in ascii
 # @returns the proper pinyin, ready to display
 def parsePinyin(pinyin):
-    #   vowels = require('../../data/vowels.json');
-    f = open(os.path.join(DATA_DIR, 'vowels.json'))
-    vowels = json.load(f)
+    vowels = _vowels()
     # print(vowels)
 
     if pinyin is None or pinyin == "" or pinyin == "·":
@@ -382,6 +393,41 @@ def parsePinyin(pinyin):
     return word
 
 
+_ASCII_SYLLABLE = re.compile(r"^[A-Za-z:]+[1-5]$")
+
+
+@functools.lru_cache(maxsize=8192)
+def _tonify_syllable(token):
+    """Convert one alphanumeric pinyin syllable to toned Unicode.
+
+    Tokens already carrying tone marks, tokens without a tone digit
+    (e.g. the '-' separator some entries use), and tokens parsePinyin
+    can't handle (e.g. vowel-less 'm2') pass through unchanged, so this
+    is idempotent and safe over already-toned data.
+    """
+    if _ASCII_SYLLABLE.match(token):
+        try:
+            return parsePinyin(token)
+        except Exception:
+            pass
+    return token
+
+
+def tonifyPinyin(pinyin):
+    """Convert a pinyin string to toned Unicode, syllable by syllable.
+
+    'hang2 xing2' -> 'háng xíng'. Only CEDICT's raw source file
+    (cedict_ts.u8) keeps the alphanumeric form; the curated data files
+    (custom/priority/blacklist.json) and every generated datamap store
+    toned pinyin, and EntryManager tonifies on load so in-memory entries
+    always carry toned pinyin regardless of what's on disk.
+    """
+    if not pinyin:
+        return pinyin
+    return " ".join(_tonify_syllable(token)
+                     for token in str(pinyin).split(" "))
+
+
 def cacheKey(type, key):
     return f"{type}::{key}"
 
@@ -447,7 +493,7 @@ def reloadCEDict():
             entry = {
                 'traditional': traditional,
                 'simplified': simplified,
-                'pinyin': pinyin,
+                'pinyin': tonifyPinyin(pinyin),
                 'english': english,
                 'priority': priority
             }
@@ -573,6 +619,7 @@ def setupCustomEntries():
         # print(data)
         for entry in data:
             entry['priority'] = CUSTOM_PRIORITY
+            entry['pinyin'] = tonifyPinyin(entry.get('pinyin', ''))
             
             simplified = entry['simplified']
             traditional = entry['traditional']
@@ -617,6 +664,7 @@ def setupBlacklistEntries():
         # print(data)
         for entry in data:
             entry['priority'] = CUSTOM_PRIORITY
+            entry['pinyin'] = tonifyPinyin(entry.get('pinyin', ''))
             
             simplified = entry['simplified']
             traditional = entry['traditional']
@@ -660,6 +708,7 @@ def setupPriorityEntries():
         # print(data)
         for entry in data:
             entry['priority'] = USER_PRIORITY
+            entry['pinyin'] = tonifyPinyin(entry.get('pinyin', ''))
             
             simplified = entry['simplified']
             traditional = entry['traditional']

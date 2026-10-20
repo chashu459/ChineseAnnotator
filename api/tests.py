@@ -83,6 +83,25 @@ class PolyphoneResolvePinyinTest(TestCase):
         pinyin, source = resolve_pinyin("\u4f60", "ni3", entries, "na3")
         self.assertEqual((pinyin, source), ("ni3", SOURCE_DICT))
 
+    def test_toned_entries_and_dict_pinyin(self):
+        # In-memory entries carry toned pinyin (EntryManager tonifies on
+        # load); resolve_pinyin normalizes internally and still returns
+        # ASCII for the display path.
+        entries = self._entries("xíng", "háng")
+        pinyin, source = resolve_pinyin("\u884c", "xíng", entries, "hang2")
+        self.assertEqual((pinyin, source), ("xing2", SOURCE_CONFLICT))
+
+    @override_settings(G2PM_ADVISORY_MODE=False)
+    def test_toned_entries_non_advisory_returns_ascii_candidate(self):
+        entries = self._entries("xíng", "háng")
+        pinyin, source = resolve_pinyin("\u884c", "xíng", entries, "hang2")
+        self.assertEqual((pinyin, source), ("hang2", SOURCE_G2PM))
+
+    def test_distinct_readings_normalizes_to_ascii(self):
+        from api.polyphone import distinct_readings
+        entries = self._entries("xíng háng", "háng")
+        self.assertEqual(distinct_readings(entries), ["xing2", "hang2"])
+
 
 class PolyphoneUnparseTest(TestCase):
     """unparse_pinyin: toned/ASCII -> ASCII + tone digit."""
@@ -318,6 +337,43 @@ class PolyphoneG2PWTest(TestCase):
                 sys.modules["django.conf"] = old_conf
             else:
                 sys.modules.pop("django.conf", None)
+
+
+class TonifyPinyinTest(TestCase):
+    """tonifyPinyin: alphanumeric -> toned Unicode, idempotent."""
+
+    def test_single_syllable(self):
+        from api.utils import tonifyPinyin
+        self.assertEqual(tonifyPinyin("hang2"), "háng")
+
+    def test_multi_syllable_and_neutral_tone(self):
+        from api.utils import tonifyPinyin
+        self.assertEqual(tonifyPinyin("shao4 fu1 ren5"), "shào fū ren")
+
+    def test_already_toned_unchanged(self):
+        from api.utils import tonifyPinyin
+        self.assertEqual(tonifyPinyin("háng xíng"), "háng xíng")
+        self.assertEqual(tonifyPinyin("Gē Tāng"), "Gē Tāng")
+
+    def test_capitals_and_umlaut(self):
+        from api.utils import tonifyPinyin
+        self.assertEqual(tonifyPinyin("Ling2 nu:3"), "Líng nǚ")
+
+    def test_unparseable_tokens_pass_through(self):
+        from api.utils import tonifyPinyin
+        # Vowel-less CEDICT tokens and the '-' separator must not break.
+        self.assertEqual(tonifyPinyin("m2"), "m2")
+        self.assertEqual(tonifyPinyin("-"), "-")
+        self.assertEqual(tonifyPinyin("r5"), "r")
+        self.assertEqual(tonifyPinyin(""), "")
+
+    def test_entry_manager_tonifies_datamap(self):
+        from api.EntryManager import _tonify_datamap
+        datamap = {"dict::行": [{"pinyin": "hang2 xing2"},
+                                {"pinyin": "háng"}]}
+        _tonify_datamap(datamap)
+        self.assertEqual(datamap["dict::行"][0]["pinyin"], "háng xíng")
+        self.assertEqual(datamap["dict::行"][1]["pinyin"], "háng")
 
 
 class PolyphoneLLMTest(TestCase):

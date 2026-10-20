@@ -283,7 +283,10 @@ class AnnotationView(APIView):
         for i, ch in enumerate(phrase):
             if i >= len(default_pinyins):
                 break
-            dict_pinyin = default_pinyins[i]
+            # In-memory entries carry toned pinyin (see api/EntryManager);
+            # the resolve/model path works in ASCII (normalize_pinyin also
+            # unifies the v/ü/u: spellings).
+            dict_pinyin = polyphone.normalize_pinyin(default_pinyins[i])
             # Dismissals are scoped to the character's immediate neighbors
             # within the phrase, so marking a suggestion wrong in one word
             # doesn't suppress it in others.
@@ -654,6 +657,8 @@ class CuratePriorityView(APIView):
       with the english copied from the top entry as a fallback.
     The datamap is rebuilt and EntryManager reloaded, so the change is live
     immediately. suggested_pinyin may be toned ('háng') or ASCII ('hang2').
+    Persisted rows store toned pinyin ('háng'); only the raw CEDICT source
+    (cedict_ts.u8) keeps the alphanumeric form.
     """
     def post(self, request, format=None):
         data = request.data if isinstance(request.data, dict) else {}
@@ -690,7 +695,8 @@ class CuratePriorityView(APIView):
         if char_index >= len(parts):
             return Response({"detail": "pinyin/character length mismatch"},
                             status=status.HTTP_400_BAD_REQUEST)
-        parts[char_index] = suggested
+        # Entries carry toned pinyin in memory; persist the same form.
+        parts[char_index] = parsePinyin(suggested)
         corrected = " ".join(parts)
 
         match = next((e for e in entries if e.get("pinyin") == corrected),
@@ -768,29 +774,32 @@ class AddCustomPhraseView(APIView):
     POST {simplified, traditional?, pinyin, english?, notes?}: appends a
     custom.json row (deduped on simplified+pinyin), rebuilds the custom
     datamap and reloads it so the phrase annotates immediately. Pinyin is
-    space-separated readings, e.g. "ni3 hao3"; toned Unicode ("nǐ hǎo")
-    and ü spellings ("nü3"/"nv3") are normalized to numbered ASCII
-    ("ni3 hao3", "nu:3") on save.
+    space-separated readings, e.g. "ni3 hao3"; toned Unicode ("nǐ hǎo") and
+    ü spellings ("nü3"/"nv3") are accepted and validated in numbered ASCII
+    form, but the row is stored with toned pinyin ("nǐ hǎo", "nǚ").
     """
 
     def post(self, request, format=None):
         data = request.data if isinstance(request.data, dict) else {}
         simplified = (data.get("simplified") or "").strip()
         traditional = (data.get("traditional") or "").strip() or simplified
-        pinyin = " ".join(
+        ascii_parts = [
             polyphone.normalize_pinyin(p)
             for p in (data.get("pinyin") or "").strip().split()
-        )
+        ]
         english = (data.get("english") or "").strip()
         notes = (data.get("notes") or "").strip()
 
         if not simplified:
             return Response({"detail": "simplified is required"},
                             status=status.HTTP_400_BAD_REQUEST)
-        parts = [p for p in pinyin.split(" ") if p]
+        parts = [p for p in ascii_parts if p]
         if not parts or not all(polyphone.looks_like_pinyin(p) for p in parts):
             return Response({"detail": "pinyin is not valid"},
                             status=status.HTTP_400_BAD_REQUEST)
+        # custom.json stores toned pinyin; only the raw CEDICT source keeps
+        # the alphanumeric form.
+        pinyin = " ".join(parsePinyin(p) for p in parts)
 
         # 1. custom.json -- this is what makes the phrase live in annotation.
         path = _data_path("custom.json")

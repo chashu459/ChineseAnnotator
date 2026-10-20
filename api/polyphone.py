@@ -223,8 +223,14 @@ def model_label(model=None):
 
 
 def distinct_readings(entries):
-    """Distinct known readings across entries, in priority order."""
-    return _distinct_readings(entries) if entries else []
+    """Distinct known readings across entries, in priority order.
+
+    In-memory entries carry toned pinyin (see api/EntryManager); readings
+    are normalized to ASCII + tone digit here because this feeds the model
+    comparison path (g2pM/g2pW/LLM all emit ASCII).
+    """
+    return ([normalize_pinyin(c) for c in _distinct_readings(entries)]
+            if entries else [])
 
 
 def model_available(model=None):
@@ -620,6 +626,9 @@ def resolve_pinyin(char, dict_pinyin, char_entries, g2pm_pinyin, prev_char="",
         (pinyin, source): the ASCII pinyin to use and where it came from --
         SOURCE_DICT, SOURCE_G2PM or SOURCE_CONFLICT.
     """
+    # In-memory entries carry toned pinyin; the whole comparison path
+    # works in ASCII (models emit ASCII), so normalize on entry.
+    dict_pinyin = normalize_pinyin(dict_pinyin)
     if not g2pm_pinyin or not looks_like_pinyin(g2pm_pinyin):
         return dict_pinyin, SOURCE_DICT
     if g2pm_pinyin.lower() == dict_pinyin.lower():
@@ -639,7 +648,7 @@ def resolve_pinyin(char, dict_pinyin, char_entries, g2pm_pinyin, prev_char="",
         # The user marked this suggestion wrong in this context; never flag
         # it again here (it can still flag in other contexts).
         return dict_pinyin, SOURCE_DICT
-    candidates = _distinct_readings(char_entries) if char_entries else []
+    candidates = distinct_readings(char_entries)
     if len(candidates) < 2:
         # Not actually polyphonic in our dictionary; nothing to disambiguate.
         return dict_pinyin, SOURCE_DICT
