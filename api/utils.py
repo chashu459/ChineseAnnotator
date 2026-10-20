@@ -369,19 +369,23 @@ def parsePinyin(pinyin):
         char = "I"
     elif "u:" in word:
         # confirmed that u and u: don't appear in the same word, so this ordering is fine
-        char = "u:"
+        char = "v"
     elif "U:" in word:
         # confirmed that u and u: don't appear in the same word, so this ordering is fine
-        char = "U:"
+        char = "V"
     elif "v" in word:
         # v represents ü in pinyin
-        char = "u:"
+        char = "v"
     elif "V" in word:
-        char = "U:"
+        char = "V"
     elif "u" in word:
         char = "u"
     elif "U" in word:
         char = "U"
+    elif "m" == word:
+        char = "m"
+    elif "M" == word:
+        char = "M"
     else:
         print("ERROR: found pinyin with no vowel: " + pinyin)
         char = "?"

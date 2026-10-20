@@ -137,4 +137,6 @@ staticfiles/
 # macOS
 .DS_Store
 
-data/models
+data/models/
+
+.vscode/
