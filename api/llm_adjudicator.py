@@ -23,6 +23,8 @@ Behavior notes:
 - If the server is unreachable or the reply doesn't parse to one of the
   candidates, adjudicate() returns None and the caller keeps the dictionary
   reading -- annotation never breaks.
+- Set LLM_ADJUDICATOR_DEBUG=1 to log every (character, candidates, raw
+  reply, parsed choice) triple to stdout for accuracy debugging.
 - Like the other models this runs in advisory mode by default: a
   disagreement is flagged as SOURCE_CONFLICT for dictionary curation rather
   than overriding the reading.
@@ -72,6 +74,14 @@ def timeout():
         return float(_setting("LLM_ADJUDICATOR_TIMEOUT", 30))
     except (TypeError, ValueError):
         return 30.0
+
+
+def _debug():
+    """Whether to log every prompt/reply/choice (LLM_ADJUDICATOR_DEBUG)."""
+    val = _setting("LLM_ADJUDICATOR_DEBUG", False)
+    if isinstance(val, str):
+        return val.strip().lower() not in ("", "0", "false", "no", "off")
+    return bool(val)
 
 
 def clear_cache():
@@ -127,7 +137,7 @@ def _prompt(char, phrase, char_index, candidates, sentence):
         "句子：%s\n"
         "词语“%s”中的第 %d 个字是“%s”，它是多音字。\n"
         "候选读音：%s\n"
-        "要求：只回答正确读音的拼音（带声调，例如 háng），不要解释，不要输出其他任何内容。"
+        "要求：只回答其中一个候选读音（带声调的拼音形式），不要解释，不要输出其他任何内容。"
         % (sentence, phrase, char_index + 1, char, shown)
     )
 
@@ -178,10 +188,16 @@ def _match_candidate(reply, candidates):
     normalized = polyphone.unparse_pinyin(cleaned)
     if isinstance(normalized, str) and normalized.lower() in lowered:
         return lowered[normalized.lower()]
-    # 2. Candidate mentioned verbatim somewhere in the reply.
-    for c in candidates:
-        if c.lower() in reply.lower() or _toned(c) in reply:
-            return c
+    # 2. Exactly one candidate mentioned verbatim in the reply. A reply
+    #    that names several readings ("不是 háng，而是 xíng") must not
+    #    resolve to whichever candidate happens to be listed first --
+    #    treat it as unparseable instead of guessing wrong.
+    mentioned = [c for c in candidates
+                 if c.lower() in reply.lower() or _toned(c) in reply]
+    if len(mentioned) == 1:
+        return mentioned[0]
+    if len(mentioned) > 1:
+        return None
     # 3. Unique toneless-base match.
     base = re.sub(r"[1-5]$", "", normalized.lower()) \
         if isinstance(normalized, str) else ""
@@ -217,6 +233,7 @@ def adjudicate(char, candidates, sentence, phrase="", char_index=0,
     # failed or its reply didn't parse -- don't retry it every time).
     if key in _cache:
         return _cache[key]
+    reply = None
     try:
         reply = _chat(_prompt(char, phrase or char, char_index,
                               candidates, sentence))
@@ -224,5 +241,8 @@ def adjudicate(char, candidates, sentence, phrase="", char_index=0,
     except Exception as exc:
         print("[llm_adjudicator] adjudication failed: %s" % exc)
         choice = None
+    if _debug():
+        print("[llm_adjudicator] char=%s candidates=%s reply=%r choice=%s"
+              % (char, candidates, reply, choice))
     _cache_put(key, choice)
     return choice

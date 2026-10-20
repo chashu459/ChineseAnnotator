@@ -391,13 +391,41 @@ class PolyphoneLLMTest(TestCase):
         llm_adjudicator.adjudicate("行", ["hang2", "xing2"], "句子二。")
         self.assertEqual(self._calls, 2)
 
-    def test_match_candidate_prefers_exact_over_verbatim(self):
+    def test_multi_mention_reply_returns_none(self):
         from api import llm_adjudicator
-        # Reply names the wrong reading in prose but answers hang2.
+        # Reply names both readings: resolving to the first-listed
+        # candidate would be a coin flip with a systematic bias, so this
+        # is unparseable (no conflict flagged) instead of a guess.
+        self.assertIsNone(
+            llm_adjudicator._match_candidate(
+                "不是 xíng，而是 háng", ["hang2", "xing2"]))
+        self.assertIsNone(
+            llm_adjudicator._match_candidate(
+                "hang2 or xing2?", ["hang2", "xing2"]))
+
+    def test_single_verbatim_mention_returns_candidate(self):
+        from api import llm_adjudicator
         self.assertEqual(
             llm_adjudicator._match_candidate(
-                "不是 xíng，而是 háng", ["hang2", "xing2"]),
-            "hang2")
+                "我觉得是 xíng2 吧", ["hang2", "xing2"]),
+            "xing2")
+
+    def test_debug_logs_reply_and_choice(self):
+        import io
+        from contextlib import redirect_stdout
+        from django.test import override_settings
+        from api import llm_adjudicator
+        self._replies.append("háng")
+        buf = io.StringIO()
+        with override_settings(LLM_ADJUDICATOR_DEBUG=True):
+            with redirect_stdout(buf):
+                choice = llm_adjudicator.adjudicate(
+                    "行", ["hang2", "xing2"], "他一个人走在银行前面。")
+        self.assertEqual(choice, "hang2")
+        logged = buf.getvalue()
+        self.assertIn("char=行", logged)
+        self.assertIn("reply='háng'", logged)
+        self.assertIn("choice=hang2", logged)
 
     def test_model_available_reflects_ping(self):
         import unittest.mock as mock
