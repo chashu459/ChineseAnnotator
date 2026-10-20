@@ -63,7 +63,24 @@ _TONED_VOWELS = {
     "Ū": ("U", "1"), "Ú": ("U", "2"), "Ǔ": ("U", "3"), "Ù": ("U", "4"),
     "Ǖ": ("U:", "1"), "Ǘ": ("U:", "2"), "Ǚ": ("U:", "3"), "Ǜ": ("U:", "4"),
     "Ü": ("U:", "5"),
+    # Vowel-less syllabic 'm' (e.g. 呣), toned per data/vowels.json.
+    "m̄": ("m", "1"), "ḿ": ("m", "2"), "m̌": ("m", "3"), "m̀": ("m", "4"),
+    "M̄": ("M", "1"), "Ḿ": ("M", "2"), "M̌": ("M", "3"), "M̀": ("M", "4"),
 }
+
+
+# Combining diacritical marks for decomposed toned forms. Some toned
+# syllables have no precomposed Unicode form (e.g. "m̄" is "m" + U+0304),
+# so the vowels table emits them decomposed; fold the mark into a digit.
+_COMBINING_TONES = {
+    "\u0304": "1",  # macron
+    "\u0301": "2",  # acute
+    "\u030c": "3",  # caron
+    "\u0300": "4",  # grave
+}
+_COMBINING_TONE_RE = re.compile(
+    "([A-Za-z\u00fc\u00dc:])"
+    "([\u0304\u0301\u030c\u0300])")
 
 
 def unparse_pinyin(pinyin):
@@ -77,6 +94,10 @@ def unparse_pinyin(pinyin):
         return pinyin
     if looks_like_pinyin(pinyin):
         return pinyin.lower()
+    folded = _COMBINING_TONE_RE.sub(
+        lambda m: m.group(1) + _COMBINING_TONES[m.group(2)], pinyin)
+    if folded != pinyin and looks_like_pinyin(folded):
+        return folded.lower()
     for i, ch in enumerate(pinyin):
         if ch in _TONED_VOWELS:
             base, tone = _TONED_VOWELS[ch]

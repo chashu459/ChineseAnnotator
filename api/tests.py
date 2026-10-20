@@ -118,6 +118,13 @@ class PolyphoneUnparseTest(TestCase):
         self.assertEqual(unparse_pinyin("lǜ"), "lu:4")
         self.assertEqual(unparse_pinyin("lü"), "lu:5")
 
+    def test_toned_m(self):
+        # Vowel-less syllabic 'm' (呣) round-trips through the vowels table.
+        self.assertEqual(unparse_pinyin("ḿ"), "m2")
+        self.assertEqual(unparse_pinyin("m̄"), "m1")
+        self.assertEqual(unparse_pinyin("m̌"), "m3")
+        self.assertEqual(unparse_pinyin("m̀"), "m4")
+
     def test_toneless_is_neutral(self):
         self.assertEqual(unparse_pinyin("de"), "de5")
 
@@ -361,8 +368,10 @@ class TonifyPinyinTest(TestCase):
 
     def test_unparseable_tokens_pass_through(self):
         from api.utils import tonifyPinyin
-        # Vowel-less CEDICT tokens and the '-' separator must not break.
-        self.assertEqual(tonifyPinyin("m2"), "m2")
+        # The vowels table tones vowel-less 'm' directly (m̄/ḿ/m̌/m̀);
+        # the '-' separator still passes through.
+        self.assertEqual(tonifyPinyin("m2"), "ḿ")
+        self.assertEqual(tonifyPinyin("m5"), "m")
         self.assertEqual(tonifyPinyin("-"), "-")
         self.assertEqual(tonifyPinyin("r5"), "r")
         self.assertEqual(tonifyPinyin(""), "")

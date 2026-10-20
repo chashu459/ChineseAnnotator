@@ -307,6 +307,11 @@ def _vowels():
     if _VOWELS is None:
         with open(os.path.join(DATA_DIR, 'vowels.json')) as f:
             _VOWELS = json.load(f)
+        missing = [k for k in ("a", "e", "i", "o", "u", "v")
+                   if k not in _VOWELS]
+        if missing:
+            print(f"[parsePinyin] WARNING: vowels.json is missing entries: "
+                  f"{missing} -- annotation falls back instead of crashing")
     return _VOWELS
 
 
@@ -391,9 +396,25 @@ def parsePinyin(pinyin):
         char = "?"
 
     # print(f"char: {char}")
-    if vowels[char]:
-        return word.replace(char, vowels[char][accent], 1).replace('u:', vowels['u:']["5"], 1).replace('U:', vowels['U:']["5"], 1)
-
+    marked = vowels.get(char, {}).get(accent)
+    if marked is None:
+        # Unknown vowel/tone, or an incomplete vowels table: never crash
+        # annotation over it -- return the input unchanged.
+        print(f"ERROR: no vowel entry for char={char!r} accent={accent!r} "
+              f"(pinyin={pinyin!r}); leaving as-is")
+        return pinyin
+    # 'u:'/'U:' and 'v'/'V' are the same vowel; the table keys it under
+    # 'v'/'V', so replace whichever spelling the word actually contains.
+    if char == "v" and "u:" in word:
+        word = word.replace("u:", marked, 1)
+    elif char == "V" and "U:" in word:
+        word = word.replace("U:", marked, 1)
+    else:
+        word = word.replace(char, marked, 1)
+    # Leftover ü spellings the main replacement didn't catch (e.g. the tone
+    # landed on 'a' in a word also spelled with 'u:') clean up to plain ü.
+    word = word.replace("u:", vowels.get("v", {}).get("5", "ü"), 1)
+    word = word.replace("U:", vowels.get("V", {}).get("5", "Ü"), 1)
     return word
 
 
