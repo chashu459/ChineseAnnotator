@@ -83,6 +83,25 @@ class PolyphoneResolvePinyinTest(TestCase):
         pinyin, source = resolve_pinyin("\u4f60", "ni3", entries, "na3")
         self.assertEqual((pinyin, source), ("ni3", SOURCE_DICT))
 
+    def test_toned_entries_and_dict_pinyin(self):
+        # In-memory entries carry toned pinyin (EntryManager tonifies on
+        # load); resolve_pinyin normalizes internally and still returns
+        # ASCII for the display path.
+        entries = self._entries("xíng", "háng")
+        pinyin, source = resolve_pinyin("\u884c", "xíng", entries, "hang2")
+        self.assertEqual((pinyin, source), ("xing2", SOURCE_CONFLICT))
+
+    @override_settings(G2PM_ADVISORY_MODE=False)
+    def test_toned_entries_non_advisory_returns_ascii_candidate(self):
+        entries = self._entries("xíng", "háng")
+        pinyin, source = resolve_pinyin("\u884c", "xíng", entries, "hang2")
+        self.assertEqual((pinyin, source), ("hang2", SOURCE_G2PM))
+
+    def test_distinct_readings_normalizes_to_ascii(self):
+        from api.polyphone import distinct_readings
+        entries = self._entries("xíng háng", "háng")
+        self.assertEqual(distinct_readings(entries), ["xing2", "hang2"])
+
 
 class PolyphoneUnparseTest(TestCase):
     """unparse_pinyin: toned/ASCII -> ASCII + tone digit."""
@@ -98,6 +117,13 @@ class PolyphoneUnparseTest(TestCase):
     def test_umlaut(self):
         self.assertEqual(unparse_pinyin("lǜ"), "lu:4")
         self.assertEqual(unparse_pinyin("lü"), "lu:5")
+
+    def test_toned_m(self):
+        # Vowel-less syllabic 'm' (呣) round-trips through the vowels table.
+        self.assertEqual(unparse_pinyin("ḿ"), "m2")
+        self.assertEqual(unparse_pinyin("m̄"), "m1")
+        self.assertEqual(unparse_pinyin("m̌"), "m3")
+        self.assertEqual(unparse_pinyin("m̀"), "m4")
 
     def test_toneless_is_neutral(self):
         self.assertEqual(unparse_pinyin("de"), "de5")
@@ -318,3 +344,178 @@ class PolyphoneG2PWTest(TestCase):
                 sys.modules["django.conf"] = old_conf
             else:
                 sys.modules.pop("django.conf", None)
+
+
+class TonifyPinyinTest(TestCase):
+    """tonifyPinyin: alphanumeric -> toned Unicode, idempotent."""
+
+    def test_single_syllable(self):
+        from api.utils import tonifyPinyin
+        self.assertEqual(tonifyPinyin("hang2"), "háng")
+
+    def test_multi_syllable_and_neutral_tone(self):
+        from api.utils import tonifyPinyin
+        self.assertEqual(tonifyPinyin("shao4 fu1 ren5"), "shào fū ren")
+
+    def test_already_toned_unchanged(self):
+        from api.utils import tonifyPinyin
+        self.assertEqual(tonifyPinyin("háng xíng"), "háng xíng")
+        self.assertEqual(tonifyPinyin("Gē Tāng"), "Gē Tāng")
+
+    def test_capitals_and_umlaut(self):
+        from api.utils import tonifyPinyin
+        self.assertEqual(tonifyPinyin("Ling2 nu:3"), "Líng nǚ")
+
+    def test_unparseable_tokens_pass_through(self):
+        from api.utils import tonifyPinyin
+        # The vowels table tones vowel-less 'm' directly (m̄/ḿ/m̌/m̀);
+        # the '-' separator still passes through.
+        self.assertEqual(tonifyPinyin("m2"), "ḿ")
+        self.assertEqual(tonifyPinyin("m5"), "m")
+        self.assertEqual(tonifyPinyin("-"), "-")
+        self.assertEqual(tonifyPinyin("r5"), "r")
+        self.assertEqual(tonifyPinyin(""), "")
+
+    def test_entry_manager_tonifies_datamap(self):
+        from api.EntryManager import _tonify_datamap
+        datamap = {"dict::行": [{"pinyin": "hang2 xing2"},
+                                {"pinyin": "háng"}]}
+        _tonify_datamap(datamap)
+        self.assertEqual(datamap["dict::行"][0]["pinyin"], "háng xíng")
+        self.assertEqual(datamap["dict::行"][1]["pinyin"], "háng")
+
+
+class PolyphoneLLMTest(TestCase):
+    """LLM adjudicator: reply parsing, caching, and graceful fallback.
+
+    _chat is stubbed so no Ollama server is needed.
+    """
+
+    def setUp(self):
+        from api import llm_adjudicator
+        llm_adjudicator.clear_cache()
+        self._replies = []
+        self._calls = 0
+
+        def fake_chat(prompt):
+            self._calls += 1
+            reply = self._replies.pop(0) if self._replies else ""
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
+
+        import unittest.mock as mock
+        self._patcher = mock.patch.object(llm_adjudicator, "_chat", fake_chat)
+        self._patcher.start()
+
+    def tearDown(self):
+        from api import llm_adjudicator
+        self._patcher.stop()
+        llm_adjudicator.clear_cache()
+
+    def _adjudicate(self, reply, **kwargs):
+        from api import llm_adjudicator
+        self._replies.append(reply)
+        params = dict(char="行", candidates=["hang2", "xing2"],
+                      sentence="他一个人走在银行前面。", phrase="银行",
+                      char_index=1)
+        params.update(kwargs)
+        return llm_adjudicator.adjudicate(**params)
+
+    def test_toned_reply_maps_to_candidate(self):
+        self.assertEqual(self._adjudicate("háng"), "hang2")
+
+    def test_ascii_reply_maps_to_candidate(self):
+        self.assertEqual(self._adjudicate("xing2"), "xing2")
+
+    def test_garbage_reply_returns_none(self):
+        self.assertIsNone(self._adjudicate("我不知道"))
+
+    def test_empty_reply_returns_none(self):
+        self.assertIsNone(self._adjudicate(""))
+
+    def test_chat_failure_returns_none_and_never_raises(self):
+        self.assertIsNone(
+            self._adjudicate(ConnectionError("server down")))
+
+    def test_result_is_cached(self):
+        from api import llm_adjudicator
+        self._replies.append("háng")
+        first = llm_adjudicator.adjudicate(
+            "行", ["hang2", "xing2"], "他一个人走在银行前面。")
+        second = llm_adjudicator.adjudicate(
+            "行", ["hang2", "xing2"], "他一个人走在银行前面。")
+        self.assertEqual(first, "hang2")
+        self.assertEqual(second, "hang2")
+        self.assertEqual(self._calls, 1)
+
+    def test_different_context_triggers_new_call(self):
+        from api import llm_adjudicator
+        self._replies.extend(["háng", "xíng"])
+        llm_adjudicator.adjudicate("行", ["hang2", "xing2"], "句子一。")
+        llm_adjudicator.adjudicate("行", ["hang2", "xing2"], "句子二。")
+        self.assertEqual(self._calls, 2)
+
+    def test_multi_mention_reply_returns_none(self):
+        from api import llm_adjudicator
+        # Reply names both readings: resolving to the first-listed
+        # candidate would be a coin flip with a systematic bias, so this
+        # is unparseable (no conflict flagged) instead of a guess.
+        self.assertIsNone(
+            llm_adjudicator._match_candidate(
+                "不是 xíng，而是 háng", ["hang2", "xing2"]))
+        self.assertIsNone(
+            llm_adjudicator._match_candidate(
+                "hang2 or xing2?", ["hang2", "xing2"]))
+
+    def test_single_verbatim_mention_returns_candidate(self):
+        from api import llm_adjudicator
+        self.assertEqual(
+            llm_adjudicator._match_candidate(
+                "我觉得是 xíng2 吧", ["hang2", "xing2"]),
+            "xing2")
+
+    def test_debug_logs_reply_and_choice(self):
+        import io
+        from contextlib import redirect_stdout
+        from django.test import override_settings
+        from api import llm_adjudicator
+        self._replies.append("háng")
+        buf = io.StringIO()
+        with override_settings(LLM_ADJUDICATOR_DEBUG=True):
+            with redirect_stdout(buf):
+                choice = llm_adjudicator.adjudicate(
+                    "行", ["hang2", "xing2"], "他一个人走在银行前面。")
+        self.assertEqual(choice, "hang2")
+        logged = buf.getvalue()
+        self.assertIn("char=行", logged)
+        self.assertIn("reply='háng'", logged)
+        self.assertIn("choice=hang2", logged)
+
+    def test_model_available_reflects_ping(self):
+        import unittest.mock as mock
+        import api.polyphone as polyphone
+        from api import llm_adjudicator
+        with mock.patch.object(llm_adjudicator, "_ping", return_value=True):
+            llm_adjudicator.clear_cache()
+            self.assertTrue(polyphone.model_available("llm"))
+        with mock.patch.object(llm_adjudicator, "_ping", return_value=False):
+            llm_adjudicator.clear_cache()
+            self.assertFalse(polyphone.model_available("llm"))
+
+    def test_predict_with_confidence_returns_none_for_llm(self):
+        import api.polyphone as polyphone
+        pinyins, confidences = polyphone.predict_with_confidence(
+            "银行", model="llm")
+        self.assertIsNone(pinyins)
+        self.assertEqual(confidences, {})
+
+    def test_model_label(self):
+        import api.polyphone as polyphone
+        self.assertEqual(polyphone.model_label("llm"), "LLM")
+        self.assertEqual(polyphone.model_label("g2pm"), "g2pM")
+        self.assertEqual(polyphone.model_label("g2pw"), "g2pW")
+
+    def test_llm_in_g2p_models(self):
+        import api.polyphone as polyphone
+        self.assertIn("llm", polyphone.G2P_MODELS)

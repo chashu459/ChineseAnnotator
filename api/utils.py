@@ -1,3 +1,4 @@
+import functools
 import json
 import os
 import re
@@ -297,14 +298,29 @@ def isChinese(char):
     return re.search(REGEX_CHINESE, char)
 
 
+_VOWELS = None
+
+
+def _vowels():
+    """Load data/vowels.json once (parsePinyin used to reopen it per call)."""
+    global _VOWELS
+    if _VOWELS is None:
+        with open(os.path.join(DATA_DIR, 'vowels.json')) as f:
+            _VOWELS = json.load(f)
+        missing = [k for k in ("a", "e", "i", "o", "u", "v")
+                   if k not in _VOWELS]
+        if missing:
+            print(f"[parsePinyin] WARNING: vowels.json is missing entries: "
+                  f"{missing} -- annotation falls back instead of crashing")
+    return _VOWELS
+
+
 # Parses pinyin from ascii to utf-8
 #  i.e. from 'san1' into 'sān'
 # @param {*} pinyin in ascii
 # @returns the proper pinyin, ready to display
 def parsePinyin(pinyin):
-    #   vowels = require('../../data/vowels.json');
-    f = open(os.path.join(DATA_DIR, 'vowels.json'))
-    vowels = json.load(f)
+    vowels = _vowels()
     # print(vowels)
 
     if pinyin is None or pinyin == "" or pinyin == "·":
@@ -358,28 +374,83 @@ def parsePinyin(pinyin):
         char = "I"
     elif "u:" in word:
         # confirmed that u and u: don't appear in the same word, so this ordering is fine
-        char = "u:"
+        char = "v"
     elif "U:" in word:
         # confirmed that u and u: don't appear in the same word, so this ordering is fine
-        char = "U:"
+        char = "V"
     elif "v" in word:
         # v represents ü in pinyin
-        char = "u:"
+        char = "v"
     elif "V" in word:
-        char = "U:"
+        char = "V"
     elif "u" in word:
         char = "u"
     elif "U" in word:
         char = "U"
+    elif "m" == word:
+        char = "m"
+    elif "M" == word:
+        char = "M"
     else:
         print("ERROR: found pinyin with no vowel: " + pinyin)
         char = "?"
 
     # print(f"char: {char}")
-    if vowels[char]:
-        return word.replace(char, vowels[char][accent], 1).replace('u:', vowels['u:']["5"], 1).replace('U:', vowels['U:']["5"], 1)
-
+    marked = vowels.get(char, {}).get(accent)
+    if marked is None:
+        # Unknown vowel/tone, or an incomplete vowels table: never crash
+        # annotation over it -- return the input unchanged.
+        print(f"ERROR: no vowel entry for char={char!r} accent={accent!r} "
+              f"(pinyin={pinyin!r}); leaving as-is")
+        return pinyin
+    # 'u:'/'U:' and 'v'/'V' are the same vowel; the table keys it under
+    # 'v'/'V', so replace whichever spelling the word actually contains.
+    if char == "v" and "u:" in word:
+        word = word.replace("u:", marked, 1)
+    elif char == "V" and "U:" in word:
+        word = word.replace("U:", marked, 1)
+    else:
+        word = word.replace(char, marked, 1)
+    # Leftover ü spellings the main replacement didn't catch (e.g. the tone
+    # landed on 'a' in a word also spelled with 'u:') clean up to plain ü.
+    word = word.replace("u:", vowels.get("v", {}).get("5", "ü"), 1)
+    word = word.replace("U:", vowels.get("V", {}).get("5", "Ü"), 1)
     return word
+
+
+_ASCII_SYLLABLE = re.compile(r"^[A-Za-z:]+[1-5]$")
+
+
+@functools.lru_cache(maxsize=8192)
+def _tonify_syllable(token):
+    """Convert one alphanumeric pinyin syllable to toned Unicode.
+
+    Tokens already carrying tone marks, tokens without a tone digit
+    (e.g. the '-' separator some entries use), and tokens parsePinyin
+    can't handle (e.g. vowel-less 'm2') pass through unchanged, so this
+    is idempotent and safe over already-toned data.
+    """
+    if _ASCII_SYLLABLE.match(token):
+        try:
+            return parsePinyin(token)
+        except Exception:
+            pass
+    return token
+
+
+def tonifyPinyin(pinyin):
+    """Convert a pinyin string to toned Unicode, syllable by syllable.
+
+    'hang2 xing2' -> 'háng xíng'. Only CEDICT's raw source file
+    (cedict_ts.u8) keeps the alphanumeric form; the curated data files
+    (custom/priority/blacklist.json) and every generated datamap store
+    toned pinyin, and EntryManager tonifies on load so in-memory entries
+    always carry toned pinyin regardless of what's on disk.
+    """
+    if not pinyin:
+        return pinyin
+    return " ".join(_tonify_syllable(token)
+                     for token in str(pinyin).split(" "))
 
 
 def cacheKey(type, key):
@@ -447,7 +518,7 @@ def reloadCEDict():
             entry = {
                 'traditional': traditional,
                 'simplified': simplified,
-                'pinyin': pinyin,
+                'pinyin': tonifyPinyin(pinyin),
                 'english': english,
                 'priority': priority
             }
@@ -573,6 +644,7 @@ def setupCustomEntries():
         # print(data)
         for entry in data:
             entry['priority'] = CUSTOM_PRIORITY
+            entry['pinyin'] = tonifyPinyin(entry.get('pinyin', ''))
             
             simplified = entry['simplified']
             traditional = entry['traditional']
@@ -617,6 +689,7 @@ def setupBlacklistEntries():
         # print(data)
         for entry in data:
             entry['priority'] = CUSTOM_PRIORITY
+            entry['pinyin'] = tonifyPinyin(entry.get('pinyin', ''))
             
             simplified = entry['simplified']
             traditional = entry['traditional']
@@ -660,6 +733,7 @@ def setupPriorityEntries():
         # print(data)
         for entry in data:
             entry['priority'] = USER_PRIORITY
+            entry['pinyin'] = tonifyPinyin(entry.get('pinyin', ''))
             
             simplified = entry['simplified']
             traditional = entry['traditional']

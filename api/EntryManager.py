@@ -43,7 +43,22 @@ from django.core.cache import caches
 from api.Trie import Trie
 from api.models import BlacklistEntry
 
-from api.utils import CUSTOM_PRIORITY, DATA_DIR, DEFAULT_PRIORITY, INVALID_PRIORITY, MAIN_PRIORITY, SURNAME_PRIORITY, VARIANT_PRIORITY, TRAD, DICT, CUSTOM, BLACKLIST, PRIORITY, TRADDICT, TRADCUSTOM, TRADBLACKLIST, TRADPRIORITY, cacheKey, entryKey
+from api.utils import CUSTOM_PRIORITY, DATA_DIR, DEFAULT_PRIORITY, INVALID_PRIORITY, MAIN_PRIORITY, SURNAME_PRIORITY, VARIANT_PRIORITY, TRAD, DICT, CUSTOM, BLACKLIST, PRIORITY, TRADDICT, TRADCUSTOM, TRADBLACKLIST, TRADPRIORITY, cacheKey, entryKey, tonifyPinyin
+
+
+def _tonify_datamap(datamap):
+    """Convert every entry's pinyin to toned Unicode, in place.
+
+    Only CEDICT's raw source file (cedict_ts.u8) keeps the alphanumeric
+    form; datamaps regenerated after the toned-pinyin switch already carry
+    toned pinyin (tonifyPinyin is idempotent). This keeps the in-memory
+    invariant -- entries always hold toned pinyin -- for stale datamap
+    files still on disk.
+    """
+    for entries in datamap.values():
+        for entry in entries:
+            entry["pinyin"] = tonifyPinyin(entry.get("pinyin", ""))
+    return datamap
 
 
 class EntryManagerSingleton(object):
@@ -266,23 +281,23 @@ class EntryManagerSingleton(object):
     def load(self) :
         with open(os.path.join(DATA_DIR, "datamapA.json")) as f:
             data = json.load(f)
-            self.dictA = data
-            
+            self.dictA = _tonify_datamap(data)
+
         with open(os.path.join(DATA_DIR, "datamapB.json")) as f:
             data = json.load(f)
-            self.dictB = data
-            
+            self.dictB = _tonify_datamap(data)
+
         with open(os.path.join(DATA_DIR, f"datamap{CUSTOM}.json")) as f:
             data = json.load(f)
-            self.dictCustom = data
-            
+            self.dictCustom = _tonify_datamap(data)
+
         with open(os.path.join(DATA_DIR, f"datamap{BLACKLIST}.json")) as f:
             data = json.load(f)
-            self.dictBlacklist = data
-            
+            self.dictBlacklist = _tonify_datamap(data)
+
         with open(os.path.join(DATA_DIR, f"datamap{PRIORITY}.json")) as f:
             data = json.load(f)
-            self.dictPriority = data
+            self.dictPriority = _tonify_datamap(data)
             
         with open(os.path.join(DATA_DIR, f"tradToSimpMap.json")) as f:
             data = json.load(f)
@@ -338,14 +353,14 @@ class EntryManagerSingleton(object):
         """Re-read only the priority datamap (after priority.json changed)."""
         with open(os.path.join(DATA_DIR, f"datamap{PRIORITY}.json")) as f:
             data = json.load(f)
-            self.dictPriority = data
+            self.dictPriority = _tonify_datamap(data)
         self._get_cached.cache_clear()
 
     def reloadCustoms(self):
         """Re-read only the custom datamap (after custom.json changed)."""
         with open(os.path.join(DATA_DIR, f"datamap{CUSTOM}.json")) as f:
             data = json.load(f)
-            self.dictCustom = data
+            self.dictCustom = _tonify_datamap(data)
         self._get_cached.cache_clear()
 
     def reload(self):
