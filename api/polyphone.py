@@ -63,7 +63,24 @@ _TONED_VOWELS = {
     "Ū": ("U", "1"), "Ú": ("U", "2"), "Ǔ": ("U", "3"), "Ù": ("U", "4"),
     "Ǖ": ("U:", "1"), "Ǘ": ("U:", "2"), "Ǚ": ("U:", "3"), "Ǜ": ("U:", "4"),
     "Ü": ("U:", "5"),
+    # Vowel-less syllabic 'm' (e.g. 呣), toned per data/vowels.json.
+    "m̄": ("m", "1"), "ḿ": ("m", "2"), "m̌": ("m", "3"), "m̀": ("m", "4"),
+    "M̄": ("M", "1"), "Ḿ": ("M", "2"), "M̌": ("M", "3"), "M̀": ("M", "4"),
 }
+
+
+# Combining diacritical marks for decomposed toned forms. Some toned
+# syllables have no precomposed Unicode form (e.g. "m̄" is "m" + U+0304),
+# so the vowels table emits them decomposed; fold the mark into a digit.
+_COMBINING_TONES = {
+    "\u0304": "1",  # macron
+    "\u0301": "2",  # acute
+    "\u030c": "3",  # caron
+    "\u0300": "4",  # grave
+}
+_COMBINING_TONE_RE = re.compile(
+    "([A-Za-z\u00fc\u00dc:])"
+    "([\u0304\u0301\u030c\u0300])")
 
 
 def unparse_pinyin(pinyin):
@@ -77,6 +94,10 @@ def unparse_pinyin(pinyin):
         return pinyin
     if looks_like_pinyin(pinyin):
         return pinyin.lower()
+    folded = _COMBINING_TONE_RE.sub(
+        lambda m: m.group(1) + _COMBINING_TONES[m.group(2)], pinyin)
+    if folded != pinyin and looks_like_pinyin(folded):
+        return folded.lower()
     for i, ch in enumerate(pinyin):
         if ch in _TONED_VOWELS:
             base, tone = _TONED_VOWELS[ch]
@@ -195,7 +216,15 @@ def is_enabled():
 G2P_MODEL_G2PM = "g2pm"
 G2P_MODEL_G2PW = "g2pw"
 G2P_MODEL_G2PC = "g2pc"
-G2P_MODELS = (G2P_MODEL_G2PM, G2P_MODEL_G2PW, G2P_MODEL_G2PC)
+G2P_MODEL_LLM = "llm"
+G2P_MODELS = (G2P_MODEL_G2PM, G2P_MODEL_G2PW, G2P_MODEL_G2PC, G2P_MODEL_LLM)
+
+MODEL_LABELS = {
+    G2P_MODEL_G2PM: "g2pM",
+    G2P_MODEL_G2PW: "g2pW",
+    G2P_MODEL_G2PC: "g2pC",
+    G2P_MODEL_LLM: "LLM",
+}
 
 
 def active_model():
@@ -206,6 +235,23 @@ def active_model():
     except Exception:
         name = G2P_MODEL_G2PM
     return name if name in G2P_MODELS else G2P_MODEL_G2PM
+
+
+def model_label(model=None):
+    """Display label for a model name ("g2pM", "g2pW", "LLM")."""
+    return MODEL_LABELS.get(model or active_model(),
+                            MODEL_LABELS[G2P_MODEL_G2PM])
+
+
+def distinct_readings(entries):
+    """Distinct known readings across entries, in priority order.
+
+    In-memory entries carry toned pinyin (see api/EntryManager); readings
+    are normalized to ASCII + tone digit here because this feeds the model
+    comparison path (g2pM/g2pW/LLM all emit ASCII).
+    """
+    return ([normalize_pinyin(c) for c in _distinct_readings(entries)]
+            if entries else [])
 
 
 def model_available(model=None):
@@ -221,6 +267,9 @@ def model_available(model=None):
     if not is_enabled():
         return False
     name = model or active_model()
+    if name == G2P_MODEL_LLM:
+        from api import llm_adjudicator
+        return llm_adjudicator.available()
     if name == G2P_MODEL_G2PW:
         return get_g2pw_converter() is not None
     if name == G2P_MODEL_G2PC:
@@ -513,7 +562,11 @@ def predict_with_confidence(text, model=None):
 
     Args:
         text: the raw input string passed to AnnotationView.annotate.
-        model: "g2pm", "g2pw", or "g2pc"; defaults to active_model().
+        model: "g2pm", "g2pw", "g2pc" or "llm"; defaults to active_model().
+            "llm" has no whole-text prediction -- it adjudicates each
+            polyphonic character at resolve time (see
+            api/llm_adjudicator.py), so this returns (None, {}) for it
+            and the caller branches before calling.
 
     Returns:
         (pinyins, confidences): pinyins is a list with one ASCII pinyin
@@ -526,6 +579,8 @@ def predict_with_confidence(text, model=None):
     if not text or not is_enabled():
         return None, {}
     name = model or active_model()
+    if name == G2P_MODEL_LLM:
+        return None, {}
     if name == G2P_MODEL_G2PW:
         return _predict_g2pw(text)
     if name == G2P_MODEL_G2PC:
@@ -592,6 +647,9 @@ def resolve_pinyin(char, dict_pinyin, char_entries, g2pm_pinyin, prev_char="",
         (pinyin, source): the ASCII pinyin to use and where it came from --
         SOURCE_DICT, SOURCE_G2PM or SOURCE_CONFLICT.
     """
+    # In-memory entries carry toned pinyin; the whole comparison path
+    # works in ASCII (models emit ASCII), so normalize on entry.
+    dict_pinyin = normalize_pinyin(dict_pinyin)
     if not g2pm_pinyin or not looks_like_pinyin(g2pm_pinyin):
         return dict_pinyin, SOURCE_DICT
     if g2pm_pinyin.lower() == dict_pinyin.lower():
@@ -611,7 +669,7 @@ def resolve_pinyin(char, dict_pinyin, char_entries, g2pm_pinyin, prev_char="",
         # The user marked this suggestion wrong in this context; never flag
         # it again here (it can still flag in other contexts).
         return dict_pinyin, SOURCE_DICT
-    candidates = _distinct_readings(char_entries) if char_entries else []
+    candidates = distinct_readings(char_entries)
     if len(candidates) < 2:
         # Not actually polyphonic in our dictionary; nothing to disambiguate.
         return dict_pinyin, SOURCE_DICT

@@ -30,6 +30,7 @@ from api.serializers import (AnnotationSerializer, BlacklistEntrySerializer,
                              UpdateEntrySerializer,EditEntrySerializer)
 from api.Trie import (Trie, TradTrie)
 from api import polyphone
+from api import llm_adjudicator
 from api.utils import (BLACKLIST, CUSTOM, DICT, PRIORITY, DEFAULT_OWNER, DEFAULT_PRIORITY, MAIN_PRIORITY, MAX_PRIORITY, NBSP, SESSIONS,
                        OwnerOrDefault, USER_PRIORITY, isChinese, parsePinyin,
                        reloadCEDict, openChapterText, listNovels,
@@ -255,20 +256,26 @@ class AnnotationView(APIView):
         return lst
 
     def _resolve_phrase_pinyins(self, phrase, entries, poly_pinyins, pos, trad,
-                              confidences=None):
+                              confidences=None, use_llm=False, sentence=""):
         """Resolve per-character pinyin and provenance for a phrase.
 
-        Starts from the top-priority entry's readings, then lets g2pM's
-        contextual predictions override individual characters -- for
+        Starts from the top-priority entry's readings, then lets the
+        disambiguation model's contextual predictions override individual
+        characters -- for
         single-character phrases and for phrase-internal ambiguities like
         长长 (e.g. 头发长长了 -> zhang3 chang2)
         alike -- constrained to known dictionary readings (see
         api/polyphone.py). Returns a list of (pinyin, source, suggested,
         confidence) tuples, one per character: the ASCII pinyin to use, its
-        provenance ('dict' | 'g2pm' | 'conflict'), g2pM's proposed reading
-        when the source is 'conflict' (None otherwise), and the model's
-        softmax confidence (0..1) for its prediction when one was made
-        (None otherwise).
+        provenance ('dict' | 'g2pm' | 'conflict'), the model's proposed
+        reading when the source is 'conflict' (None otherwise), and the
+        model's softmax confidence (0..1) for its prediction when one was
+        made (None otherwise).
+
+        use_llm: instead of aligning a whole-text prediction (poly_pinyins),
+        adjudicate each polyphonic character at resolve time with an LLM,
+        using `sentence` (the current fragment) as context. See
+        api/llm_adjudicator.py.
         """
         confidences = confidences or {}
         default_pinyins = [p for p in entries[0]['pinyin'].split(" ") if p != "-"]
@@ -276,31 +283,51 @@ class AnnotationView(APIView):
         for i, ch in enumerate(phrase):
             if i >= len(default_pinyins):
                 break
-            dict_pinyin = default_pinyins[i]
-            g2pm_pinyin = None
-            if (poly_pinyins is not None and isChinese(ch)
+            # In-memory entries carry toned pinyin (see api/EntryManager);
+            # the resolve/model path works in ASCII (normalize_pinyin also
+            # unifies the v/ü/u: spellings).
+            dict_pinyin = polyphone.normalize_pinyin(default_pinyins[i])
+            # Dismissals are scoped to the character's immediate neighbors
+            # within the phrase, so marking a suggestion wrong in one word
+            # doesn't suppress it in others.
+            prev_char = phrase[i - 1] if i > 0 else ""
+            next_char = phrase[i + 1] if i < len(phrase) - 1 else ""
+            model_pinyin = None
+            char_entries = None
+            if use_llm and isChinese(ch):
+                # The LLM has no whole-text prediction to align; adjudicate
+                # this character directly, with the sentence as context.
+                # Only polyphonic characters (2+ dictionary candidates)
+                # trigger a call -- the dictionary constrains the answer.
+                char_entries = EntryManager.get(ch, trad=trad)
+                candidates = polyphone.distinct_readings(char_entries)
+                if len(candidates) >= 2:
+                    choice = llm_adjudicator.adjudicate(
+                        ch, candidates, sentence, phrase=phrase,
+                        char_index=i, prev_char=prev_char,
+                        next_char=next_char)
+                    if (choice and polyphone.looks_like_pinyin(choice)
+                            and choice.lower() != dict_pinyin.lower()):
+                        model_pinyin = choice
+            elif (poly_pinyins is not None and isChinese(ch)
                     and pos + i < len(poly_pinyins)):
                 candidate = poly_pinyins[pos + i]
                 if (polyphone.looks_like_pinyin(candidate)
                         and candidate.lower() != dict_pinyin.lower()):
-                    g2pm_pinyin = candidate
-            if g2pm_pinyin is None:
+                    model_pinyin = candidate
+            if model_pinyin is None:
                 resolved_chars.append(
                     (dict_pinyin, polyphone.SOURCE_DICT, None, None))
                 continue
             # The model disagrees with the dictionary on this character;
             # only let it win when its reading is a known reading of the
             # character on its own.
-            char_entries = EntryManager.get(ch, trad=trad)
-            # Dismissals are scoped to the character's immediate neighbors
-            # within the phrase, so marking a suggestion wrong in one word
-            # doesn't suppress it in others.
-            prev_char = phrase[i - 1] if i > 0 else ""
-            next_char = phrase[i + 1] if i < len(phrase) - 1 else ""
+            if char_entries is None:
+                char_entries = EntryManager.get(ch, trad=trad)
             resolved, source = polyphone.resolve_pinyin(
-                ch, dict_pinyin, char_entries, g2pm_pinyin,
+                ch, dict_pinyin, char_entries, model_pinyin,
                 prev_char=prev_char, next_char=next_char)
-            suggested = g2pm_pinyin if source == polyphone.SOURCE_CONFLICT else None
+            suggested = model_pinyin if source == polyphone.SOURCE_CONFLICT else None
             confidence = confidences.get(pos + i)
             resolved_chars.append((resolved, source, suggested, confidence))
         return resolved_chars
@@ -314,7 +341,9 @@ class AnnotationView(APIView):
             so the fast path (with_provenance=False) skips it entirely; the
             frontend calls /annotate/provenance in the background for
             dev-mode highlighting.
-        model: "g2pm" or "g2pw"; defaults to polyphone.active_model().
+        model: "g2pm", "g2pw" or "llm"; defaults to polyphone.active_model().
+            "llm" adjudicates each polyphonic character at resolve time via
+            an Ollama-compatible server (see api/llm_adjudicator.py).
         """
         print("===============================")
         print(text)
@@ -357,9 +386,18 @@ class AnnotationView(APIView):
         run_g2pm = with_provenance or not polyphone.advisory_mode()
         poly_pinyins = None
         poly_confidences = {}
+        use_llm = False
         if run_g2pm:
-            poly_pinyins, poly_confidences = polyphone.predict_with_confidence(
-                text, model=model)
+            resolved_model = model or polyphone.active_model()
+            if resolved_model == polyphone.G2P_MODEL_LLM:
+                # The LLM has no whole-text prediction to align; it
+                # adjudicates each polyphonic character at resolve time
+                # with the sentence as context (see _resolve_phrase_pinyins).
+                use_llm = True
+            else:
+                poly_pinyins, poly_confidences = (
+                    polyphone.predict_with_confidence(
+                        text, model=resolved_model))
 
         # fragments concatenate back to text in order; record each
         # fragment's start offset so single-character phrases can look up
@@ -426,7 +464,8 @@ class AnnotationView(APIView):
                         if(entries):
                             resolved_chars = self._resolve_phrase_pinyins(
                                 phrase, entries, poly_pinyins, pos, trad,
-                                confidences=poly_confidences)
+                                confidences=poly_confidences,
+                                use_llm=use_llm, sentence=fragment)
                             # print("entry: '" +  + "'")
                             # pprint(entry)
 
@@ -513,8 +552,8 @@ class ProvenanceView(APIView):
     endpoint in the background when ?dev=1 is set and swaps the result in to
     highlight model/dictionary disagreements.
 
-    POST {text, model?}: model is "g2pm" (default) or "g2pw" for A/B
-    testing the disambiguation models against each other.
+    POST {text, model?}: model is "g2pm" (default), "g2pw" or "llm" for
+    A/B testing the disambiguation models against each other.
     """
     def post(self, request, format=None):
         data = request.data if isinstance(request.data, dict) else {}
@@ -523,8 +562,9 @@ class ProvenanceView(APIView):
             return Response([], status=status.HTTP_200_OK)
         model = data.get('model') or polyphone.active_model()
         if model not in polyphone.G2P_MODELS:
-            return Response({"detail": "model must be 'g2pm', 'g2pw' or 'g2pc'"},
-                            status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "model must be 'g2pm', 'g2pw', 'g2pc' or 'llm'"},
+                status=status.HTTP_400_BAD_REQUEST)
         # Fail loudly (dev-only endpoint): silently returning all-dict would
         # make missing-model deployments indistinguishable from "no conflicts".
         # g2pW provisions in the background; report that distinctly so the
@@ -617,6 +657,8 @@ class CuratePriorityView(APIView):
       with the english copied from the top entry as a fallback.
     The datamap is rebuilt and EntryManager reloaded, so the change is live
     immediately. suggested_pinyin may be toned ('háng') or ASCII ('hang2').
+    Persisted rows store toned pinyin ('háng'); only the raw CEDICT source
+    (cedict_ts.u8) keeps the alphanumeric form.
     """
     def post(self, request, format=None):
         data = request.data if isinstance(request.data, dict) else {}
@@ -639,11 +681,10 @@ class CuratePriorityView(APIView):
                             status=status.HTTP_400_BAD_REQUEST)
         model = data.get("model") or polyphone.active_model()
         if model not in polyphone.G2P_MODELS:
-            return Response({"detail": "model must be 'g2pm', 'g2pw' or 'g2pc'"},
-                            status=status.HTTP_400_BAD_REQUEST)
-        model_label = ("g2pW" if model == polyphone.G2P_MODEL_G2PW
-                       else "g2pC" if model == polyphone.G2P_MODEL_G2PC
-                       else "g2pM")
+            return Response(
+                {"detail": "model must be 'g2pm', 'g2pw', 'g2pc' or 'llm'"},
+                status=status.HTTP_400_BAD_REQUEST)
+        model_label = polyphone.model_label(model)
 
         entries = EntryManager.get(phrase)
         if not entries:
@@ -654,7 +695,8 @@ class CuratePriorityView(APIView):
         if char_index >= len(parts):
             return Response({"detail": "pinyin/character length mismatch"},
                             status=status.HTTP_400_BAD_REQUEST)
-        parts[char_index] = suggested
+        # Entries carry toned pinyin in memory; persist the same form.
+        parts[char_index] = parsePinyin(suggested)
         corrected = " ".join(parts)
 
         match = next((e for e in entries if e.get("pinyin") == corrected),
@@ -732,29 +774,32 @@ class AddCustomPhraseView(APIView):
     POST {simplified, traditional?, pinyin, english?, notes?}: appends a
     custom.json row (deduped on simplified+pinyin), rebuilds the custom
     datamap and reloads it so the phrase annotates immediately. Pinyin is
-    space-separated readings, e.g. "ni3 hao3"; toned Unicode ("nǐ hǎo")
-    and ü spellings ("nü3"/"nv3") are normalized to numbered ASCII
-    ("ni3 hao3", "nu:3") on save.
+    space-separated readings, e.g. "ni3 hao3"; toned Unicode ("nǐ hǎo") and
+    ü spellings ("nü3"/"nv3") are accepted and validated in numbered ASCII
+    form, but the row is stored with toned pinyin ("nǐ hǎo", "nǚ").
     """
 
     def post(self, request, format=None):
         data = request.data if isinstance(request.data, dict) else {}
         simplified = (data.get("simplified") or "").strip()
         traditional = (data.get("traditional") or "").strip() or simplified
-        pinyin = " ".join(
+        ascii_parts = [
             polyphone.normalize_pinyin(p)
             for p in (data.get("pinyin") or "").strip().split()
-        )
+        ]
         english = (data.get("english") or "").strip()
         notes = (data.get("notes") or "").strip()
 
         if not simplified:
             return Response({"detail": "simplified is required"},
                             status=status.HTTP_400_BAD_REQUEST)
-        parts = [p for p in pinyin.split(" ") if p]
+        parts = [p for p in ascii_parts if p]
         if not parts or not all(polyphone.looks_like_pinyin(p) for p in parts):
             return Response({"detail": "pinyin is not valid"},
                             status=status.HTTP_400_BAD_REQUEST)
+        # custom.json stores toned pinyin; only the raw CEDICT source keeps
+        # the alphanumeric form.
+        pinyin = " ".join(parsePinyin(p) for p in parts)
 
         # 1. custom.json -- this is what makes the phrase live in annotation.
         path = _data_path("custom.json")

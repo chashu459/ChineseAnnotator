@@ -11,6 +11,10 @@ const vowels: Record<string, Record<string, string>> = {
   U: { "1": "Ū", "2": "Ú", "3": "Ǔ", "4": "Ù", "5": "U" },
   "u:": { "1": "ǖ", "2": "ǘ", "3": "ǚ", "4": "ǜ", "5": "ü" },
   "U:": { "1": "Ǖ", "2": "Ǘ", "3": "Ǚ", "4": "Ǜ", "5": "Ü" },
+  v: { "1": "ǖ", "2": "ǘ", "3": "ǚ", "4": "ǜ", "5": "ü" },
+  V: { "1": "Ǖ", "2": "Ǘ", "3": "Ǚ", "4": "Ǜ", "5": "Ü" },
+  m: { "1": "m̄", "2": "ḿ", "3": "m̌", "4": "m̀", "5": "m" },
+  M: { "1": "M̄", "2": "Ḿ", "3": "M̌", "4": "M̀", "5": "M" }
 };
 
 export function parsePinyin(pinyin: string) {
@@ -52,6 +56,10 @@ export function parsePinyin(pinyin: string) {
   else if (word.includes("U:")) target = "U:";
   else if (word.includes("u")) target = "u";
   else if (word.includes("U")) target = "U";
+  else if (word.includes("v")) target = "v";
+  else if (word.includes("V")) target = "V";
+  else if (word === "m") target = "m";
+  else if (word === "M") target = "M";
 
   if (!target || !vowels[target]?.[accent]) {
     return word.replace("u:", "ü").replace("U:", "Ü");

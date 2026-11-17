@@ -65,11 +65,17 @@ type LookupTarget = {
 };
 
 // A/B testable disambiguation models: g2pM (stock), g2pW (BERT), g2pC (the
-// user's own fine-tuned g2pM weights).
-type AbModel = "g2pm" | "g2pw" | "g2pc";
+// user's own fine-tuned g2pM weights), llm (Ollama-based adjudicator).
+type AbModel = "g2pm" | "g2pw" | "g2pc" | "llm";
 
 function modelLabel(m: AbModel): string {
-  return m === "g2pw" ? "g2pW" : m === "g2pc" ? "g2pC" : "g2pM";
+  return m === "g2pw"
+    ? "g2pW"
+    : m === "g2pc"
+      ? "g2pC"
+      : m === "llm"
+        ? "LLM"
+        : "g2pM";
 }
 
 function segmentText(text: string) {
@@ -1897,7 +1903,7 @@ export default function AnnotatorPage() {
             </span>
             <span className="flex items-center gap-1">
               <span className="text-slate-400">model:</span>
-              {(["g2pm", "g2pw", "g2pc"] as const).map((m) => (
+              {(["g2pm", "g2pw", "g2pc", "llm"] as const).map((m) => (
                 <button
                   key={m}
                   type="button"
